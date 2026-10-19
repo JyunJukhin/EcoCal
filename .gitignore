@@ -1,0 +1,19 @@
+# ===== EcoCal 忽略规则 =====
+
+# 数据备份（含个人持仓数据，绝不提交到仓库）
+ecocal-backup-*.json
+backup*.json
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# 日志与临时文件
+*.log
+*.tmp
+*.swp
+
+# 依赖（本项目零第三方依赖，预留）
+node_modules/

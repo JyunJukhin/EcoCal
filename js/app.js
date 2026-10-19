@@ -1,0 +1,1308 @@
+
+'use strict';
+/* =========================================================================
+ * EcoCal - 个人资产持仓记录工具（纯本地，零依赖）
+ * 数据：Asset（产品） + Valuation（价值快照） + Settings（基准币种/汇率）
+ * ========================================================================= */
+(function () {
+
+/* ---------------- 常量与配置 ---------------- */
+const STORAGE_KEY = 'ecocal.data.v1';
+
+const CURRENCIES = {
+  CNY: { symbol: '¥',  name: '人民币' },
+  USD: { symbol: '$',  name: '美元' },
+  HKD: { symbol: 'HK$', name: '港币' },
+  EUR: { symbol: '€',  name: '欧元' },
+  GBP: { symbol: '£',  name: '英镑' },
+  JPY: { symbol: '¥',  name: '日元' },
+  SGD: { symbol: 'S$', name: '新加坡元' },
+  AUD: { symbol: 'A$', name: '澳元' },
+  CAD: { symbol: 'C$', name: '加元' },
+  CHF: { symbol: 'Fr', name: '瑞士法郎' },
+};
+const CUSTOM_CURRENCIES = {};   // 用户自定义币种（运行时累积，不入库存）
+
+const CATEGORIES = {
+  stock:     { label: '股票',      sub: ['A股', '港股', '美股', '其他市场'] },
+  fund:      { label: '基金',      sub: ['货币型', '债券型', '混合型', '指数型', '股票型', 'QDII', '其他'] },
+  bond:      { label: '债券',      sub: ['国债', '企业债', '可转债', '其他'] },
+  deposit:   { label: '存款',      sub: ['活期', '定期', '大额存单'] },
+  wealth:    { label: '银行理财',  sub: ['固收类', '权益类', '混合类'] },
+  insurance: { label: '保险',      sub: ['年金险', '增额寿险', '其他'] },
+  other:     { label: '其他',      sub: ['其他'] },
+};
+
+/* 苹果风格柔和色板（环图取色） */
+const PALETTE = ['#0071e3', '#bf5af2', '#ff9f0a', '#34c759', '#ff375f', '#64d2ff', '#ac8e68', '#5e5ce6', '#ffd60a', '#8e8e93'];
+
+/* 风险等级（R1–R5，参考银行理财风险分级）与对应标签色 */
+const RISK_LEVELS = [
+  { key: 'R1', label: 'R1（低风险）' },
+  { key: 'R2', label: 'R2（中低风险）' },
+  { key: 'R3', label: 'R3（中等风险）' },
+  { key: 'R4', label: 'R4（中高风险）' },
+  { key: 'R5', label: 'R5（高风险）' },
+];
+const RISK_COLORS = { R1: '#1d9e49', R2: '#34c759', R3: '#ff9f0a', R4: '#ff9500', R5: '#d70015' };
+
+/* 排序选项（筛选栏动态生成） */
+const SORT_OPTIONS = [
+  ['valueDesc', '市值从高到低'],
+  ['annualDesc', '年化从高到低'],
+  ['annualAsc', '年化从低到高'],
+  ['rateDesc', '收益率从高到低'],
+  ['rateAsc', '收益率从低到高（亏损优先）'],
+  ['daysDesc', '持有天数从多到少'],
+  ['name', '名称'],
+];
+
+/* ---------------- 小工具 ---------------- */
+function uid(prefix) {
+  return prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+function todayStr() {
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+function parseDate(s) {
+  if (!s) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (!m) return null;
+  const d = new Date(+m[1], +m[2] - 1, +m[3]);
+  return isNaN(d.getTime()) ? null : d;
+}
+/* 两个 YYYY-MM-DD 之间相差的自然日数（b - a），取整 */
+function dayDiff(a, b) {
+  const da = parseDate(a), db = parseDate(b);
+  if (!da || !db) return 0;
+  return Math.round((db.getTime() - da.getTime()) / 86400000);
+}
+function round2(n) { return Math.round((Number(n) + Number.EPSILON) * 100) / 100; }
+function currencySymbol(code) {
+  if (CURRENCIES[code]) return CURRENCIES[code].symbol;
+  if (CUSTOM_CURRENCIES[code]) return CUSTOM_CURRENCIES[code].symbol;
+  return code + ' ';
+}
+function currencyName(code) {
+  if (CURRENCIES[code]) return CURRENCIES[code].name;
+  if (CUSTOM_CURRENCIES[code]) return CUSTOM_CURRENCIES[code].name;
+  return code;
+}
+function fmtMoney(n, currency) {
+  const num = Number(n);
+  if (!isFinite(num)) return '--';
+  const symbol = currencySymbol(currency);
+  const digits = currency === 'JPY' ? 0 : 2;
+  const abs = Math.abs(num);
+  const parts = abs.toLocaleString('zh-CN', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+  return (num < 0 ? '-' : '') + symbol + parts;
+}
+function fmtPct(n, digits) {
+  const num = Number(n);
+  if (!isFinite(num)) return '--';
+  const d = digits == null ? 2 : digits;
+  return (num >= 0 ? '+' : '') + num.toFixed(d) + '%';
+}
+function fmtSignedMoney(n, currency) {
+  const num = Number(n);
+  if (!isFinite(num)) return '--';
+  return (num >= 0 ? '+' : '') + fmtMoney(num, currency);
+}
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+function $id(id) { return document.getElementById(id); }
+function fmtDateCN(s) { return s; }
+
+/* ---------------- 数据层（localStorage，带内存回退） ---------------- */
+let memory = null; // localStorage 不可用时的内存回退
+function storageGet() {
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) {
+    return memory;
+  }
+}
+function storageSet(data) {
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    memory = null;
+  } catch (e) {
+    memory = data; // 隐私模式等无法写入时退化为内存保存
+  }
+}
+function storageRemove() {
+  try {
+    window.localStorage.removeItem(STORAGE_KEY);
+  } catch (e) { /* ignore */ }
+  memory = null;
+}
+
+const DEFAULT_SETTINGS = {
+  baseCurrency: 'CNY', rates: {},
+  demoDismissed: false,
+  autoFetchRates: true,   // 每次启动自动获取一次最新汇率
+  ratesUpdatedAt: null,   // 最近一次联网更新汇率的时间戳
+  ratesSource: null,      // 汇率来源（公开接口名称）
+};
+
+let state = { assets: [], valuations: [], settings: Object.assign({}, DEFAULT_SETTINGS) };
+
+function saveState() { storageSet(state); }
+
+function loadState() {
+  const raw = storageGet();
+  if (raw && raw.assets && Array.isArray(raw.assets) && Array.isArray(raw.valuations)) {
+    state.assets = raw.assets;
+    state.valuations = raw.valuations;
+    state.settings = Object.assign({}, DEFAULT_SETTINGS, raw.settings || {});
+    state.settings.rates = raw.settings && raw.settings.rates ? raw.settings.rates : {};
+    return true; // 已有数据
+  }
+  return false; // 无数据
+}
+
+/* ---------------- 计算引擎（纯函数，便于测试） ---------------- */
+const Calc = {
+  /**
+   * 汇率换算：金额 → 基准币种。汇率未设置时返回 null。
+   */
+  toBase(amount, currency, settings) {
+    if (currency === settings.baseCurrency) return Number(amount);
+    const rate = settings.rates[currency];
+    if (rate == null || !(Number(rate) > 0)) return null;
+    return Number(amount) * Number(rate);
+  },
+  /**
+   * 单产品指标（本币口径）。
+   * 返回 { currentValue, days, profit, rate, simpleAnnual, compoundAnnual, latestDate, hasValuation }
+   */
+  assetMetrics(asset, valuations, settings) {
+    const vals = valuations
+      .filter(v => v.assetId === asset.id)
+      .sort((x, y) => x.date < y.date ? -1 : x.date > y.date ? 1 : 0);
+    const latest = vals.length ? vals[vals.length - 1] : null;
+    const currentValue = latest ? latest.value : asset.principal;
+    // 持有天数：截止日为「最新记录日期」；无记录时截止到今天（仍在持有中）
+    const endDate = latest
+      ? (latest.date > asset.startDate ? latest.date : asset.startDate)
+      : (dayDiff(asset.startDate, todayStr()) > 0 ? todayStr() : asset.startDate);
+    const days = Math.max(0, dayDiff(asset.startDate, endDate));
+    const profit = round2(currentValue - asset.principal);
+    const rate = asset.principal > 0 ? profit / asset.principal : 0;
+    let simpleAnnual = null, compoundAnnual = null;
+    if (days > 0 && asset.principal > 0 && currentValue > 0) {
+      simpleAnnual = rate * 365 / days;
+      compoundAnnual = Math.pow(currentValue / asset.principal, 365 / days) - 1;
+    }
+    // 基准币种口径
+    const baseCost = Calc.toBase(asset.principal, asset.currency, settings);
+    const baseValue = Calc.toBase(currentValue, asset.currency, settings);
+    return {
+      assetId: asset.id, assetCurrency: asset.currency,
+      valuations: vals, currentValue, days, profit, rate,
+      simpleAnnual, compoundAnnual,
+      latestDate: latest ? latest.date : null, hasValuation: vals.length > 0,
+      baseCost, baseValue,
+      baseProfit: (baseCost != null && baseValue != null) ? round2(baseValue - baseCost) : null,
+      rateMissing: baseCost == null || baseValue == null,
+      valuationCount: vals.length,
+    };
+  },
+  /**
+   * 可卖判定：按「开始持有日期」与「最低持有天数」（非必填）判断当前是否可卖。
+   * sellable 为 null 表示未设置最低持有天数（不限制）。
+   */
+  sellStatus(asset, today) {
+    const heldDays = Math.max(0, dayDiff(asset.startDate, today || todayStr()));
+    const minDays = asset.minHoldDays != null && Number(asset.minHoldDays) > 0
+      ? Math.floor(Number(asset.minHoldDays)) : null;
+    if (minDays == null) return { heldDays, minDays: null, sellable: null, remainingDays: 0 };
+    return {
+      heldDays, minDays,
+      sellable: heldDays >= minDays,
+      remainingDays: Math.max(0, minDays - heldDays),
+    };
+  },
+  /**
+   * 全部资产汇总（基准币种口径）。
+   * 返回 { totalCost, totalValue, totalProfit, totalRate, overallAnnual, currencyBreakdown, assetMetrics: [...], gainCount, lossCount, missingRateCurrencies }
+   */
+  summary(assets, valuations, settings) {
+    const metrics = assets.map(a => Calc.assetMetrics(a, valuations, settings));
+    let totalCost = 0, totalValue = 0, totalProfit = 0;
+    let costDays = 0, totalDaysWeight = 0;
+    let gainCount = 0, lossCount = 0;
+    const missingRateCurrencies = new Set();
+    const breakdown = {}; // 分币种小计（基准币种）
+    const usedCurrencies = new Set();
+
+    metrics.forEach(m => {
+      if (m.baseCost != null) totalCost += m.baseCost;
+      if (m.baseValue != null) totalValue += m.baseValue;
+      if (m.baseProfit != null) totalProfit += m.baseProfit;
+      else if (m.baseCost == null) missingRateCurrencies.add(m.assetCurrency);
+      if (m.baseCost != null) {
+        costDays += m.baseCost * m.days;
+        totalDaysWeight += m.baseCost;
+      }
+      if (m.baseProfit > 0.004) gainCount++;
+      else if (m.baseProfit < -0.004) lossCount++;
+      const cur = m.assetCurrency;
+      usedCurrencies.add(cur);
+      const b = breakdown[cur] = breakdown[cur] || { cost: 0, value: 0, profit: 0, count: 0 };
+      b.count++;
+      if (m.baseCost != null) b.cost += m.baseCost;
+      if (m.baseValue != null) b.value += m.baseValue;
+      if (m.baseProfit != null) b.profit += m.baseProfit;
+    });
+
+    const totalRate = totalCost > 0 ? totalProfit / totalCost : null;
+    let overallAnnual = null;
+    if (totalRate != null && costDays > 0) {
+      overallAnnual = totalRate * 365 / (costDays / totalDaysWeight);
+    }
+    // 排序：默认按市值降序
+    const sorted = metrics.slice().sort((a, b) => (b.baseValue || 0) - (a.baseValue || 0));
+    return {
+      totalCost, totalValue, totalProfit, totalRate, overallAnnual,
+      metrics: sorted, gainCount, lossCount,
+      missingRateCurrencies: Array.from(missingRateCurrencies),
+      breakdown, usedCurrencies: Array.from(usedCurrencies),
+    };
+  },
+};
+
+/* ---------------- SVG 图表生成（返回字符串） ---------------- */
+const Charts = {
+  /* 环形图：data = [{label, value, color}]，value 非正数时跳过 */
+  ring(data, size) {
+    const S = size || 180, cx = S / 2, cy = S / 2, r = S / 2 - 14, sw = 26;
+    const total = data.reduce((s, d) => s + (d.value > 0 ? d.value : 0), 0);
+    if (total <= 0) return '<div class="chart-empty">暂无数据</div>';
+    const arc = (a0, a1) => {
+      const x0 = cx + r * Math.cos(a0), y0 = cy + r * Math.sin(a0);
+      const x1 = cx + r * Math.cos(a1), y1 = cy + r * Math.sin(a1);
+      const large = (a1 - a0) > Math.PI ? 1 : 0;
+      return 'M' + x0.toFixed(2) + ' ' + y0.toFixed(2) +
+             'A' + r + ' ' + r + ' 0 ' + large + ' 1 ' + x1.toFixed(2) + ' ' + y1.toFixed(2);
+    };
+    let acc = -Math.PI / 2;
+    let paths = '';
+    const legend = [];
+    data.forEach((d) => {
+      if (!(d.value > 0)) return;
+      const angle = d.value / total * Math.PI * 2;
+      const a1 = acc + angle;
+      paths += '<path d="' + arc(acc, a1) + '" fill="none" stroke="' + d.color +
+               '" stroke-width="' + sw + '" stroke-linecap="butt"/>';
+      legend.push('<span><i style="background:' + d.color + '"></i>' + esc(d.label) +
+                  ' · ' + (Math.round(d.value / total * 1000) / 10) + '%</span>');
+      acc = a1;
+    });
+    return '<div style="display:flex;flex-direction:column;align-items:center">' +
+           '<svg viewBox="0 0 ' + S + ' ' + S + '" style="max-width:' + S + 'px">' + paths + '</svg>' +
+           '<div class="chart-legend">' + legend.join('') + '</div></div>';
+  },
+  /* 横向条形图：items = [{label, value, sub, loss}] */
+  bars(items, baseCurrency) {
+    if (!items.length) return '<div class="chart-empty">暂无数据</div>';
+    const max = Math.max.apply(null, items.map(i => Math.abs(i.value))) || 1;
+    const rows = items.map((it, idx) => {
+      const pct = Math.max(2, Math.round(Math.abs(it.value) / max * 100));
+      const barColor = it.loss ? 'rgba(29,158,73,.75)' : 'rgba(0,113,227,.78)';
+      return '<div style="display:grid;grid-template-columns:110px 1fr 110px;gap:10px;align-items:center;padding:5px 0;font-size:12px">' +
+        '<div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink-2)" title="' + esc(it.label) + '">' + esc(it.label) + '</div>' +
+        '<div style="position:relative;height:16px;background:rgba(0,0,0,.05);border-radius:8px">' +
+          '<div style="position:absolute;left:0;top:0;bottom:0;width:' + pct + '%;background:' + barColor + ';border-radius:8px;transition:width .3s"></div>' +
+        '</div>' +
+        '<div style="text-align:right;font-feature-settings:tnum;font-weight:600">' + fmtMoney(it.value, baseCurrency) +
+          (it.loss ? '<span style="color:var(--green);font-size:11px;font-weight:400"> ' + it.sub + '</span>'
+                   : '<span style="color:var(--ink-3);font-size:11px;font-weight:400"> ' + it.sub + '</span>') +
+        '</div></div>';
+    }).join('');
+    return '<div style="width:100%">' + rows + '</div>';
+  },
+  /* 折线走势图：points = [{date, value}]，>=2 点才画 */
+  line(points, w, h) {
+    if (points.length < 2) return '<div class="chart-empty">价值记录不足 2 条，暂无法绘制走势（可继续添加价值记录）</div>';
+    const W = w || 320, H = h || 140, pad = { l: 30, r: 6, t: 8, b: 20 };
+    const values = points.map(p => p.value);
+    let min = Math.min.apply(null, values), max = Math.max.apply(null, values);
+    if (min === max) { min -= 1; max += 1; }
+    const range = max - min;
+    const spanW = W - pad.l - pad.r, spanH = H - pad.t - pad.b;
+    const x = i => pad.l + (points.length === 1 ? spanW / 2 : i / (points.length - 1) * spanW);
+    const y = v => pad.t + (1 - (v - min) / range) * spanH;
+    const lastIdx = points.length - 1;
+    let linePath = '', areaPath = 'M' + x(0).toFixed(1) + ' ' + y(values[0]).toFixed(1);
+    points.forEach((p, i) => {
+      linePath += (i ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(p.value).toFixed(1) + ' ';
+    });
+    // 面积填充：首点 → 末点 → 底部 → 闭合
+    areaPath += ' L' + x(lastIdx).toFixed(1) + ' ' + (pad.t + spanH).toFixed(1) +
+                ' L' + x(0).toFixed(1) + ' ' + (pad.t + spanH).toFixed(1) + ' Z';
+    // Y 轴刻度（3 条）
+    let ticks = '';
+    for (let k = 0; k <= 2; k++) {
+      const v = min + range * k / 2;
+      const yy = pad.t + (1 - k / 2) * spanH;
+      ticks += '<line x1="' + pad.l + '" y1="' + yy.toFixed(1) + '" x2="' + (W - pad.r) +
+               '" y2="' + yy.toFixed(1) + '" stroke="rgba(0,0,0,.06)" stroke-width="1"/>' +
+               '<text x="' + (pad.l - 5) + '" y="' + (yy + 3).toFixed(1) + '" text-anchor="end" font-size="9" fill="#a1a1a6">' +
+               (v >= 10000 ? (v / 10000).toFixed(1) + '万' : Math.round(v)) + '</text>';
+    }
+    const last = points[points.length - 1];
+    const dates = points.map(p => p.date);
+    return '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;max-height:180px">' + ticks +
+      '<path d="' + areaPath + '" fill="rgba(0,113,227,.10)" stroke="none"/>' +
+      '<path d="' + linePath.trim() + '" fill="none" stroke="#0071e3" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>' +
+      '<circle cx="' + x(points.length - 1).toFixed(1) + '" cy="' + y(last.value).toFixed(1) +
+      '" r="3.2" fill="#0071e3"/>' +
+      '<text x="' + x(points.length - 1) + '" y="' + (y(last.value) - 8).toFixed(1) +
+      '" text-anchor="end" font-size="9" fill="#86868b">' + fmtMoney(last.value, '') + '</text>' +
+      '<text x="' + pad.l + '" y="' + (H - 6) + '" font-size="9" fill="#a1a1a6">' + esc(dates[0]) + '</text>' +
+      '<text x="' + (W - pad.r) + '" y="' + (H - 6) + '" text-anchor="end" font-size="9" fill="#a1a1a6">' + esc(last.date) + '</text>' +
+      '</svg>';
+  }
+};
+
+/* ---------------- 状态 & 渲染 ---------------- */
+let expanded = new Set();      // 展开卡片集合
+let filters = { category: 'all', currency: 'all', sort: 'valueDesc' };
+
+function getAsset(id) { return state.assets.find(a => a.id === id); }
+
+/* ---- 汇总区 ---- */
+function renderSummary() {
+  const s = Calc.summary(state.assets, state.valuations, state.settings);
+  const base = state.settings.baseCurrency;
+  const html = [
+    {
+      label: '总成本（' + base + '）',
+      value: fmtMoney(s.totalCost, base),
+      sub: state.assets.length + ' 个产品 · ' + s.usedCurrencies.length + ' 个币种',
+    },
+    {
+      label: '总市值（' + base + '）',
+      value: fmtMoney(s.totalValue, base),
+      sub: s.gainCount + ' 个盈利 · ' + s.lossCount + ' 个亏损',
+      cls: s.totalProfit >= 0 ? 'money-red' : 'money-green',
+    },
+    {
+      label: '累计收益（' + base + '）',
+      value: fmtSignedMoney(s.totalProfit, base),
+      sub: s.totalRate == null ? '成本为 0' : '整体收益率 ' + fmtPct(s.totalRate * 100),
+      cls: s.totalProfit >= 0 ? 'money-red' : 'money-green',
+    },
+    {
+      label: '整体年化（单利）',
+      value: s.overallAnnual == null ? '--' : fmtPct(s.overallAnnual * 100),
+      sub: '按成本加权持有天数估算',
+      cls: s.overallAnnual != null && s.overallAnnual >= 0 ? 'money-red' : 'money-green',
+    },
+  ].map(c => '<div class="summary-card"><div class="label">' + c.label + '</div>' +
+             '<div class="value ' + (c.cls || '') + '">' + c.value + '</div>' +
+             '<div class="sub">' + c.sub + '</div></div>').join('');
+  $id('summary-grid').innerHTML = html;
+
+  // 分币种小计
+  const chips = Object.keys(s.breakdown).map(cur => {
+    const b = s.breakdown[cur];
+    const cls = b.profit >= 0 ? 'gain' : 'loss';
+    return '<span class="currency-chip">' + esc(cur) +
+           '<b>' + fmtMoney(b.value, base) + '</b>' +
+           '<span class="' + cls + '">' + fmtSignedMoney(b.profit, base) + '</span></span>';
+  });
+  const missing = s.missingRateCurrencies.length
+    ? '<span class="currency-chip" style="color:#b25000">⚠ 缺汇率：' + s.missingRateCurrencies.join('、') + '（请在汇率设置中维护）</span>'
+    : '';
+  $id('currency-subtotals').innerHTML = chips.join('') + missing;
+}
+
+/* ---- 图表区 ---- */
+function renderCharts() {
+  const s = Calc.summary(state.assets, state.valuations, state.settings);
+  const base = state.settings.baseCurrency;
+
+  // 环图：按大类汇总市值
+  const byCat = {};
+  s.metrics.forEach(m => {
+    const asset = state.assets.find(a => a.id === m.assetId);
+    if (!asset || m.baseValue == null) return;
+    const key = CATEGORIES[asset.category] ? CATEGORIES[asset.category].label : asset.category;
+    byCat[key] = (byCat[key] || 0) + m.baseValue;
+  });
+  const catKeys = Object.keys(byCat);
+  const ringData = catKeys.map((k, i) => ({
+    label: k,
+    value: byCat[k],
+    color: PALETTE[i % PALETTE.length],
+  }));
+  $id('ring-chart').innerHTML = Charts.ring(ringData, 190);
+
+  // 条形图：各产品市值（基准币种）
+  const barItems = s.metrics.map(m => {
+    const asset = state.assets.find(a => a.id === m.assetId);
+    return {
+      label: asset ? asset.name : '?',
+      value: m.baseValue || 0,
+      loss: m.baseProfit != null && m.baseProfit < 0,
+      sub: m.baseProfit != null ? '· ' + fmtPct(m.rate * 100) : '· 缺汇率',
+      currency: base,
+    };
+  }).slice(0, 12);
+  $id('bar-chart').innerHTML = Charts.bars(barItems, base);
+}
+
+/* ---- 产品列表 ---- */
+function filteredAssets() {
+  let list = state.assets.slice();
+  if (filters.category !== 'all') list = list.filter(a => a.category === filters.category);
+  if (filters.currency !== 'all') list = list.filter(a => a.currency === filters.currency);
+  const metricsOf = a => Calc.assetMetrics(a, state.valuations, state.settings);
+  list.sort((a, b) => {
+    const ma = metricsOf(a), mb = metricsOf(b);
+    switch (filters.sort) {
+      case 'name': return a.name.localeCompare(b.name, 'zh');
+      case 'rateDesc': return (mb.rate - ma.rate);
+      case 'rateAsc': return (ma.rate - mb.rate);
+      case 'daysDesc': return mb.days - ma.days;
+      // 年化排序：未计算出年化（null）的排最后
+      case 'annualDesc':
+        return (mb.simpleAnnual == null ? -Infinity : mb.simpleAnnual) - (ma.simpleAnnual == null ? -Infinity : ma.simpleAnnual);
+      case 'annualAsc':
+        return (ma.simpleAnnual == null ? Infinity : ma.simpleAnnual) - (mb.simpleAnnual == null ? Infinity : mb.simpleAnnual);
+      default: return (mb.baseValue || 0) - (ma.baseValue || 0);
+    }
+  });
+  return list;
+}
+
+function timelineHTML(asset, metrics) {
+  const rows = metrics.valuations.map((v, i) => {
+    const prev = i > 0 ? metrics.valuations[i - 1].value : asset.principal;
+    const delta = round2(v.value - prev);
+    const deltaPct = prev > 0 ? delta / prev : 0;
+    const cls = delta >= 0 ? 'money-red' : 'money-green';
+    const deltaTxt = i === 0
+      ? '<span class="tl-delta ' + (delta >= 0 ? 'money-red' : 'money-green') + '">' + fmtSignedMoney(delta, asset.currency) + '（较成本 ' + fmtPct(deltaPct * 100) + '）</span>'
+      : '<span class="tl-delta ' + cls + '">' + fmtSignedMoney(delta, asset.currency) + '（' + fmtPct(deltaPct * 100) + '）</span>';
+    return '<div class="tl-item">' +
+      '<span class="tl-date">' + esc(v.date) + '</span>' +
+      '<span class="tl-value">' + fmtMoney(v.value, asset.currency) + '</span>' +
+      '<span class="tl-delta">' + deltaTxt + '</span>' +
+      '<span class="tl-ops">' +
+        '<button data-action="editValuation" data-id="' + v.id + '" title="编辑">✎</button>' +
+        '<button data-action="deleteValuation" data-id="' + v.id + '" class="del" title="删除">🗑</button>' +
+      '</span>' +
+      (v.note ? '<span class="tl-note" style="grid-column:2/-1">' + esc(v.note) + '</span>' : '') +
+      '</div>';
+  }).join('');
+
+  const addBtn = '<button data-action="addValuation" class="btn btn-mini btn-primary" style="align-self:flex-start;margin-top:6px">＋ 记录当前价值</button>';
+  return '<div class="expand-grid">' +
+    '<div>' +
+      '<div class="tl-head"><span>价值记录时间线（' + metrics.valuationCount + '）</span><span>最新记录：' + (metrics.latestDate || '无') + '</span></div>' +
+      (rows || '<div class="chart-empty" style="text-align:left;padding:12px 0">暂无价值记录，添加后此处展示历史市值</div>') +
+      addBtn +
+    '</div>' +
+    '<div>' +
+      '<div class="tl-head"><span>市值走势</span><span>' + esc(asset.currency) + '</span></div>' +
+      Charts.line(metrics.valuations.map(v => ({ date: v.date, value: v.value })), 360, 150) +
+    '</div>' +
+  '</div>';
+}
+
+function assetCardHTML(asset) {
+  const m = Calc.assetMetrics(asset, state.valuations, state.settings);
+  const cat = CATEGORIES[asset.category] || { label: asset.category || '其他' };
+  const isExpanded = expanded.has(asset.id);
+  const subTag = asset.subCategory && asset.subCategory !== '其他' ? asset.subCategory : '';
+  const shortHold = m.days > 0 && m.days < 30;
+
+  // 收益颜色（正红负绿）
+  const profitCls = m.profit >= 0 ? 'money-red' : 'money-green';
+  const rateCls = m.rate >= 0 ? 'money-red' : 'money-green';
+  let annualStr = '--';
+  let annualCls = '';
+  if (m.simpleAnnual != null) {
+    annualStr = fmtPct(m.simpleAnnual * 100);
+    annualCls = m.simpleAnnual >= 0 ? 'money-red' : 'money-green';
+  }
+  const annualHint = !m.hasValuation ? '（无价值记录，按成本计）'
+    : shortHold ? '持有过短，仅供参考' : '';
+
+  const base = state.settings.baseCurrency;
+  const baseHint = (asset.currency !== base && m.baseValue != null)
+    ? '<div class="asset-meta" style="margin-top:2px">折合 ' + base + '：' + fmtMoney(m.baseValue, base) + '</div>'
+    : '';
+
+  // 新增信息：风险等级 / T+n / 可卖状态
+  const riskTag = asset.riskLevel && RISK_LEVELS.some(r => r.key === asset.riskLevel)
+    ? '<span class="tag risk" style="color:' + RISK_COLORS[asset.riskLevel] + ';background:' + RISK_COLORS[asset.riskLevel] + '1a">' + asset.riskLevel + '</span>'
+    : '';
+  const tplusTag = asset.tPlusN != null
+    ? '<span class="tag alt">T+' + asset.tPlusN + '</span>'
+    : '';
+  const sell = Calc.sellStatus(asset, todayStr());
+  const sellBadge = sell.minDays == null ? ''
+    : sell.sellable
+      ? '<span class="badge-sell sellable">可卖</span>'
+      : '<span class="badge-sell locked">不可卖 · 还需 ' + sell.remainingDays + ' 天</span>';
+
+  return '<div class="asset-card' + (isExpanded ? ' expanded' : '') + '" data-asset-id="' + asset.id + '">' +
+    '<div class="asset-main">' +
+      '<div>' +
+        '<div class="asset-head">' +
+          '<span class="asset-name">' + esc(asset.name) + '</span>' +
+          '<span class="tag">' + esc(cat.label) + '</span>' +
+          (subTag ? '<span class="tag alt">' + esc(subTag) + '</span>' : '') +
+          riskTag + tplusTag +
+          '<span class="tag alt">' + esc(asset.currency) + '</span>' +
+        '</div>' +
+        '<div class="asset-meta">' +
+          sellBadge +
+          '<span>开始持有：' + esc(asset.startDate) + '</span>' +
+          (sell.minDays != null ? '<span>最低持有 ' + sell.minDays + ' 天 · 已持 ' + sell.heldDays + ' 天</span>' : '<span>持有 ' + m.days + ' 天</span>') +
+          (asset.quantity ? '<span>数量：' + esc(String(asset.quantity)) + '</span>' : '') +
+          (m.valuationCount ? '<span>价值记录 ' + m.valuationCount + ' 条</span>' : '') +
+        '</div>' +
+        '<div class="asset-figures">' +
+          '<div class="fig"><div class="k">成本（' + asset.currency + '）</div><div class="v">' + fmtMoney(asset.principal, asset.currency) + '</div></div>' +
+          '<div class="fig"><div class="k">最新市值</div><div class="v">' + fmtMoney(m.currentValue, asset.currency) + '</div></div>' +
+          '<div class="fig"><div class="k">累计收益</div><div class="v ' + profitCls + '">' + fmtSignedMoney(m.profit, asset.currency) + '</div></div>' +
+          '<div class="fig"><div class="k">收益率</div><div class="v ' + rateCls + '">' + fmtPct(m.rate * 100) + '</div></div>' +
+          '<div class="fig"><div class="k">年化（单利）' + (annualHint ? ' · ' + annualHint : '') + '</div><div class="v annual ' + annualCls + '">' + annualStr + '</div></div>' +
+        '</div>' +
+        (baseHint) +
+        (asset.note ? '<div class="asset-meta" style="margin-top:2px">备注：' + esc(asset.note) + '</div>' : '') +
+      '</div>' +
+      '<div class="asset-actions">' +
+        '<button class="btn btn-mini btn-primary" data-action="addValuation">＋ 记价值</button>' +
+        '<button class="btn btn-mini ghost" data-action="toggleExpand">' + (isExpanded ? '收起时间线' : '查看时间线') + '</button>' +
+        '<button class="btn btn-mini ghost" data-action="editAsset">编辑</button>' +
+        '<button class="btn btn-mini ghost" data-action="deleteAsset" style="color:var(--red)">删除</button>' +
+      '</div>' +
+    '</div>' +
+    (isExpanded ? '<div class="asset-expand">' + timelineHTML(asset, m) + '</div>' : '') +
+  '</div>';
+}
+
+function renderList() {
+  const list = filteredAssets();
+  const emptyOverall = state.assets.length === 0;
+  $id('asset-list').innerHTML = list.map(assetCardHTML).join('');
+  $id('empty-state').classList.toggle('hidden', !emptyOverall);
+  $id('asset-list').classList.toggle('hidden', emptyOverall);
+  const filterEmpty = !emptyOverall && list.length === 0;
+  if (filterEmpty) {
+    $id('asset-list').innerHTML = '<div class="card" style="text-align:center;color:var(--ink-3);padding:40px">当前筛选条件下暂无产品</div>';
+  }
+}
+
+function renderFilters() {
+  const catSel = $id('filter-category');
+  catSel.innerHTML = '<option value="all">全部类别</option>' +
+    Object.keys(CATEGORIES).map(k => '<option value="' + k + '">' + CATEGORIES[k].label + '</option>').join('');
+  catSel.value = filters.category;
+
+  const allCurrencies = new Set([...Object.keys(CURRENCIES), ...state.assets.map(a => a.currency)]);
+  const curSel = $id('filter-currency');
+  curSel.innerHTML = '<option value="all">全部币种</option>' +
+    Array.from(allCurrencies).sort().map(c => '<option value="' + c + '">' + c + ' ' + currencyName(c) + '</option>').join('');
+  curSel.value = filters.currency;
+
+  const sortSel = $id('filter-sort');
+  sortSel.innerHTML = SORT_OPTIONS.map(o => '<option value="' + o[0] + '">' + o[1] + '</option>').join('');
+  sortSel.value = filters.sort;
+}
+
+function renderAll() {
+  renderFilters();
+  renderSummary();
+  renderCharts();
+  renderList();
+}
+
+/* ---------------- 模态框 ---------------- */
+let modalOnOk = null;
+
+function openModal(title, bodyHTML, onOk, okText) {
+  $id('modal-title').textContent = title;
+  $id('modal-body').innerHTML = bodyHTML;
+  $id('modal-ok').textContent = okText || '保存';
+  $id('modal-ok').classList.remove('hidden'); // 恢复默认显示（导出面板会隐藏它）
+  modalOnOk = onOk;
+  $id('modal-backdrop').classList.remove('hidden');
+}
+function closeModal() {
+  $id('modal-backdrop').classList.add('hidden');
+  $id('modal-ok').classList.remove('hidden');
+  modalOnOk = null;
+}
+
+function confirmAction(title, text, onConfirm, okText) {
+  $id('confirm-title').textContent = title;
+  $id('confirm-text').textContent = text;
+  $id('confirm-ok').textContent = okText || '确认';
+  $id('confirm-ok').onclick = () => {
+    $id('confirm-backdrop').classList.add('hidden');
+    onConfirm();
+  };
+  $id('confirm-backdrop').classList.remove('hidden');
+}
+
+function bindModalButtons() {
+  $id('modal-close').onclick = closeModal;
+  $id('modal-cancel').onclick = closeModal;
+  $id('modal-ok').onclick = () => { if (modalOnOk) modalOnOk(); };
+  $id('confirm-close').onclick = () => $id('confirm-backdrop').classList.add('hidden');
+  $id('confirm-cancel').onclick = () => $id('confirm-backdrop').classList.add('hidden');
+}
+
+/* ---- 产品表单 ---- */
+function categoryOptionsHTML() {
+  return Object.keys(CATEGORIES).map(k =>
+    '<option value="' + k + '">' + CATEGORIES[k].label + '</option>').join('');
+}
+function subCategoryHTML(category) {
+  const subs = CATEGORIES[category] ? CATEGORIES[category].sub : ['其他'];
+  return subs.map(s => '<option value="' + s + '">' + s + '</option>').join('');
+}
+function currencyOptionsHTML(selected) {
+  const all = Object.assign({}, CURRENCIES, CUSTOM_CURRENCIES);
+  return Object.keys(all).map(c =>
+    '<option value="' + c + '"' + (c === selected ? ' selected' : '') + '>' + c + ' ' + all[c].name + '</option>').join('')
+    + '<option value="__custom__">＋ 自定义币种…</option>';
+}
+
+function assetFormHTML(asset) {
+  const a = asset || { name: '', category: 'fund', subCategory: '', currency: 'CNY', principal: '', quantity: '', startDate: todayStr(), note: '', minHoldDays: '', riskLevel: '', tPlusN: '' };
+  return '<div class="form-grid">' +
+    '<div class="field full"><label>产品名称 *</label><input id="f-name" type="text" placeholder="如：沪深300指数基金" value="' + esc(a.name) + '"></div>' +
+    '<div class="field"><label>大类 *</label><select id="f-category">' + categoryOptionsHTML() + '</select></div>' +
+    '<div class="field"><label>小类（子类）</label><select id="f-subcategory">' + subCategoryHTML(a.category || 'fund') + '</select></div>' +
+    '<div class="field"><label>币种 *</label><select id="f-currency">' + currencyOptionsHTML(a.currency || 'CNY') + '</select>' +
+      '<div class="hint" id="f-currency-custom-hint" style="display:none">自定义币种请输入 3 位大写代码（如 KRW）</div></div>' +
+    '<div class="field"><label>开始持有日期 *</label><input id="f-start" type="date" value="' + esc(a.startDate) + '"></div>' +
+    '<div class="field"><label>本金 / 买入成本（' + (a.currency || 'CNY') + '）*</label><input id="f-principal" type="number" min="0" step="0.01" placeholder="0.00" value="' + esc(a.principal) + '"></div>' +
+    '<div class="field"><label>买入数量 / 份额（可选）</label><input id="f-quantity" type="number" min="0" step="any" placeholder="如股票股数、基金份额" value="' + esc(a.quantity) + '"></div>' +
+    '<div class="field"><label>最低持有天数（可选）</label><input id="f-minhold" type="number" min="0" step="1" placeholder="如 30" value="' + esc(a.minHoldDays) + '">' +
+      '<div class="hint">达到该天数前显示「不可卖」</div></div>' +
+    '<div class="field"><label>风险等级（可选）</label><select id="f-risk">' +
+      '<option value="">未设置</option>' +
+      RISK_LEVELS.map(r => '<option value="' + r.key + '"' + (r.key === a.riskLevel ? ' selected' : '') + '>' + r.label + '</option>').join('') +
+    '</select></div>' +
+    '<div class="field"><label>T+n 到账（可选）</label><input id="f-tplusn" type="number" min="0" step="1" placeholder="如 1（T+1）" value="' + esc(a.tPlusN) + '">' +
+      '<div class="hint">赎回/卖出后多少个交易日到账</div></div>' +
+    '<div class="field full"><label>备注（可选）</label><input id="f-note" type="text" placeholder="如：定投第 3 期" value="' + esc(a.note) + '"></div>' +
+  '</div>';
+}
+
+function openAssetForm(assetId) {
+  const asset = assetId ? getAsset(assetId) : null;
+  openModal((asset ? '编辑产品 · ' + asset.name : '添加产品'), assetFormHTML(asset), () => submitAsset(assetId));
+
+  // 联动：大类变化刷新小类；币种切换显示自定义输入提示
+  const catSel = $id('f-category');
+  const subSel = $id('f-subcategory');
+  const curSel = $id('f-currency');
+  catSel.onchange = () => { subSel.innerHTML = subCategoryHTML(catSel.value); };
+  curSel.onchange = () => {
+    $id('f-currency-custom-hint').style.display = curSel.value === '__custom__' ? 'block' : 'none';
+  };
+}
+
+function submitAsset(assetId) {
+  const asset = assetId ? getAsset(assetId) : null;
+  const name = $id('f-name').value.trim();
+  const category = $id('f-category').value;
+  const subCategory = $id('f-subcategory').value;
+  let currency = $id('f-currency').value;
+  if (currency === '__custom__') {
+    currency = prompt('请输入自定义币种代码（3 位大写字母，如 KRW）');
+  }
+  const startDate = $id('f-start').value;
+  const principal = parseFloat($id('f-principal').value);
+  const quantityRaw = $id('f-quantity').value.trim();
+  const quantity = quantityRaw === '' ? null : parseFloat(quantityRaw);
+  const minHoldRaw = $id('f-minhold').value.trim();
+  const minHoldDays = minHoldRaw === '' ? null : Math.floor(parseFloat(minHoldRaw));
+  const riskLevel = $id('f-risk').value || null;
+  const tPlusNRaw = $id('f-tplusn').value.trim();
+  const tPlusN = tPlusNRaw === '' ? null : Math.floor(parseFloat(tPlusNRaw));
+  const note = $id('f-note').value.trim();
+
+  if (minHoldDays != null && (!isFinite(minHoldDays) || minHoldDays < 0)) {
+    alert('最低持有天数必须是非负整数。'); return;
+  }
+  if (tPlusN != null && (!isFinite(tPlusN) || tPlusN < 0)) {
+    alert('T+n 必须是非负整数。'); return;
+  }
+  const valid = name
+    && currency && /^[A-Z]{3}$/.test(currency)
+    && isFinite(principal) && principal > 0
+    && startDate && parseDate(startDate);
+  if (!valid) { alert('请检查：名称必填、币种为 3 位大写代码、本金必须为正数、日期格式正确。'); return; }
+  if (!CURRENCIES[currency] && !CUSTOM_CURRENCIES[currency]) {
+    CUSTOM_CURRENCIES[currency] = { symbol: currency + ' ', name: currency };
+  }
+
+  if (asset) {
+    asset.name = name; asset.category = category; asset.subCategory = subCategory;
+    asset.currency = currency; asset.principal = round2(principal);
+    asset.quantity = quantity; asset.note = note; asset.startDate = startDate;
+    asset.minHoldDays = minHoldDays; asset.riskLevel = riskLevel; asset.tPlusN = tPlusN;
+    asset.updatedAt = Date.now();
+  } else {
+    state.assets.push({
+      id: uid('asset_'), name, category, subCategory, currency,
+      principal: round2(principal), quantity, note, startDate,
+      minHoldDays, riskLevel, tPlusN,
+      createdAt: Date.now(), updatedAt: Date.now(),
+    });
+  }
+  saveState(); renderAll(); closeModal();
+}
+
+/* ---- 价值记录表单 ---- */
+function valuationFormHTML(asset, val) {
+  const v = val || { date: todayStr(), value: '', note: '' };
+  return '<div class="form-grid">' +
+    '<div class="field"><label>记录日期 *</label><input id="v-date" type="date" value="' + esc(v.date) + '"></div>' +
+    '<div class="field"><label>当时市值（' + esc(asset.currency) + '）*</label><input id="v-value" type="number" min="0" step="0.01" placeholder="0.00" value="' + esc(v.value) + '"></div>' +
+    '<div class="field full"><label>备注（可选）</label><input id="v-note" type="text" placeholder="如：分红到账 / 定投加仓" value="' + esc(v.note) + '"></div>' +
+    '<div class="field full"><div class="hint">记录「当时」看到的账户市值即可，多记几条可形成持有时间线与走势图。</div></div>' +
+  '</div>';
+}
+
+function openValuationForm(assetId, valId) {
+  const asset = getAsset(assetId);
+  const val = valId ? state.valuations.find(x => x.id === valId) : null;
+  openModal(val ? '编辑价值记录 · ' + asset.name : '记录价值 · ' + asset.name,
+    valuationFormHTML(asset, val), () => submitValuation(assetId, valId));
+}
+
+function submitValuation(assetId, valId) {
+  const date = $id('v-date').value;
+  const value = parseFloat($id('v-value').value);
+  const note = $id('v-note').value.trim();
+  if (!date || parseDate(date) == null || !isFinite(value) || value <= 0) {
+    alert('请检查：日期格式正确，市值必须为正数。'); return;
+  }
+  if (valId) {
+    const v = state.valuations.find(x => x.id === valId);
+    if (v) { v.date = date; v.value = round2(value); v.note = note; }
+  } else {
+    state.valuations.push({
+      id: uid('valuation_'), assetId, date, value: round2(value), note,
+      createdAt: Date.now(),
+    });
+  }
+  saveState(); renderAll(); closeModal();
+}
+
+/* ---- 汇率联网查询（免费公开接口，无凭证） ---- */
+const RATE_SOURCES = [
+  { key: 'erapi', url: base => 'https://open.er-api.com/v6/latest/' + base, name: 'Open Exchange Rates' },
+  { key: 'frank', url: base => 'https://api.frankfurter.app/latest?base=' + base, name: 'Frankfurter（欧央行）' },
+];
+
+/**
+ * 获取以 baseCurrency 为基准的最新汇率。
+ * 返回 { rates: { 币种: 1币种兑基准币种数量 }, source, updatedAt }；全部接口失败则抛出异常。
+ * fetcher 可注入，便于测试。
+ */
+async function fetchLatestRates(baseCurrency, fetcher) {
+  const f = fetcher || window.fetch;
+  if (typeof f !== 'function') throw new Error('当前环境不支持联网');
+  let lastErr = null;
+  for (const src of RATE_SOURCES) {
+    try {
+      const resp = await f(src.url(baseCurrency));
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const data = await resp.json();
+      const rates = data && data.rates;
+      if (!rates || typeof rates !== 'object') throw new Error('响应格式异常');
+      // 公开接口给出的是「1 基准币种 = X 币种」，换算为「1 币种 = X 基准币种」
+      const out = {};
+      Object.keys(rates).forEach(c => {
+        const r = Number(rates[c]);
+        if (c !== baseCurrency && isFinite(r) && r > 0) out[c] = round2(1 / r);
+      });
+      if (!Object.keys(out).length) throw new Error('无有效汇率数据');
+      return { rates: out, source: src.name, updatedAt: Date.now() };
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr || new Error('获取失败');
+}
+
+/**
+ * 应用最新汇率：写入 settings.rates 并刷新界面。
+ * silent = true 时不弹窗（用于启动时静默自动获取）。
+ */
+async function applyLatestRates(opts) {
+  const silent = opts && opts.silent;
+  try {
+    const result = await fetchLatestRates(state.settings.baseCurrency);
+    state.settings.rates = result.rates;
+    state.settings.ratesUpdatedAt = result.updatedAt;
+    state.settings.ratesSource = result.source;
+    saveState(); renderAll();
+    if (!silent) {
+      alert('汇率已更新（' + result.source + ' · ' + new Date(result.updatedAt).toLocaleString() + '），统计已按最新汇率刷新。');
+    }
+    return true;
+  } catch (e) {
+    if (!silent) {
+      alert('汇率获取失败：' + (e && e.message ? e.message : '网络错误') + '。可稍后重试，或在面板中手动填写汇率。');
+    }
+    return false;
+  }
+}
+
+/* ---- 汇率设置面板 ---- */
+function settingsHTML(settings) {
+  const rows = Object.keys(CURRENCIES).map(c => {
+    if (c === settings.baseCurrency) return '';
+    const rate = settings.rates[c] || '';
+    return '<div class="rate-row" data-cur="' + c + '">' +
+      '<div><b>' + c + '</b> <span class="money">' + currencyName(c) + '</span></div>' +
+      '<input type="number" min="0" step="any" class="rate-input" data-cur="' + c + '" value="' + esc(rate) + '" placeholder="如 7.25">' +
+      '<span class="money">= 1 ' + c + ' 兑 ' + settings.baseCurrency + '</span>' +
+    '</div>';
+  }).join('');
+  const lastUpdate = settings.ratesUpdatedAt
+    ? '上次联网更新：' + new Date(settings.ratesUpdatedAt).toLocaleString() + '（' + esc(settings.ratesSource || '') + '）'
+    : '尚未联网更新过汇率（可点击下方按钮获取）';
+  return '<div class="settings-tip">汇率用于把各币种资产换算为<b>基准币种</b>做总价值统计。可点击下方按钮<b>联网获取最新汇率</b>（免费公开接口，仅供统计参考，不做行情依据）；也可手动维护。未设置汇率的币种会<b>不计入总额统计</b>，并在界面标注提醒。</div>' +
+    '<div class="field" style="margin-bottom:10px"><label>基准（统计）币种</label>' +
+    '<select id="s-base">' + Object.keys(CURRENCIES).map(c =>
+      '<option value="' + c + '"' + (c === settings.baseCurrency ? ' selected' : '') + '>' + c + ' ' + currencyName(c) + '</option>').join('') +
+    '</select><div class="hint">切换基准币种时，现有汇率会自动按比例折算，保持各币种相对价值不变。</div></div>' +
+    '<div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap">' +
+      '<button type="button" id="s-fetch" class="btn btn-primary btn-mini">⟳ 获取最新汇率</button>' +
+      '<label style="font-size:12px;color:var(--ink-2);display:inline-flex;gap:6px;align-items:center">' +
+        '<input type="checkbox" id="s-autofetch"' + (settings.autoFetchRates !== false ? ' checked' : '') + '> 每次启动自动获取一次' +
+      '</label>' +
+    '</div>' +
+    '<div class="hint" id="s-updated" style="font-size:12px;color:var(--ink-3);margin-bottom:10px">' + lastUpdate + '</div>' +
+    '<div class="field" style="margin-bottom:4px"><label>各币种汇率（1 币种 = X 基准币种）</label></div>' + rows;
+}
+
+function openSettings() {
+  openModal('汇率设置', settingsHTML(state.settings), null, null);
+  $id('modal-ok').textContent = '保存汇率';
+
+  // 获取最新汇率按钮：成功后仅刷新面板中的汇率输入值
+  const fetchBtn = $id('s-fetch');
+  fetchBtn.onclick = async () => {
+    const oldText = fetchBtn.textContent;
+    fetchBtn.textContent = '获取中…';
+    fetchBtn.disabled = true;
+    const ok = await applyLatestRates({ silent: true });
+    if (ok) {
+      document.querySelectorAll('.rate-input').forEach(inp => {
+        const r = state.settings.rates[inp.dataset.cur];
+        if (r != null) inp.value = r;
+      });
+      $id('s-updated').textContent = '已更新：' + new Date(state.settings.ratesUpdatedAt).toLocaleString() + '（' + (state.settings.ratesSource || '') + '）';
+    } else {
+      $id('s-updated').textContent = '获取失败，请检查网络后重试，或手动填写汇率。';
+    }
+    fetchBtn.textContent = oldText;
+    fetchBtn.disabled = false;
+  };
+
+  // 自动获取开关
+  const autoFetch = $id('s-autofetch');
+  autoFetch.onchange = () => {
+    state.settings.autoFetchRates = autoFetch.checked;
+    saveState();
+  };
+
+  modalOnOk = () => {
+    const base = $id('s-base').value;
+    const oldBase = state.settings.baseCurrency;
+    const oldRates = Object.assign({}, state.settings.rates);
+
+    // 收集面板输入（面板只显示非基准币种，其余币种沿用旧汇率）
+    const collected = {};
+    document.querySelectorAll('.rate-input').forEach(inp => {
+      const v = parseFloat(inp.value);
+      if (isFinite(v) && v > 0) collected[inp.dataset.cur] = v;
+      else if (inp.value.trim() !== '') { alert('汇率必须为正数：' + inp.dataset.cur); collected[inp.dataset.cur] = NaN; }
+    });
+    if (Object.values(collected).some(v => isNaN(v))) return;
+    const merged = Object.assign({}, oldRates, collected);
+
+    if (base !== oldBase) {
+      // 切换基准币种：1 新基准币种 = newBaseRate 旧基准币种，其余汇率按比例折算
+      const newBaseRate = merged[base];
+      if (!(newBaseRate > 0)) {
+        alert('切换基准币种前，请先为「' + base + '」填写对旧基准「' + oldBase + '」的汇率（本币 1 兑 ' + oldBase + ' 的数量）。');
+        return;
+      }
+      const finalRates = {};
+      Object.keys(merged).forEach(c => {
+        if (c === base) return;
+        finalRates[c] = merged[c] / newBaseRate;
+      });
+      finalRates[oldBase] = 1 / newBaseRate;
+      state.settings.baseCurrency = base;
+      state.settings.rates = finalRates;
+    } else {
+      const finalRates = {};
+      Object.keys(merged).forEach(c => { if (c !== base) finalRates[c] = merged[c]; });
+      state.settings.baseCurrency = base;
+      state.settings.rates = finalRates;
+    }
+    saveState(); renderAll(); closeModal();
+  };
+}
+
+/* ---------------- 导出 / 导入（手机友好：剪贴板 + 粘贴） ---------------- */
+/** 生成完整备份 JSON 字符串 */
+function buildExportPayload() {
+  return JSON.stringify({ app: 'EcoCal', version: 1, exportedAt: new Date().toISOString(), ...state }, null, 2);
+}
+
+/** 触发浏览器下载 .json 文件 */
+function downloadJSON(payload) {
+  const blob = new Blob([payload], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'ecocal-backup-' + todayStr() + '.json';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+/** 复制文本到剪贴板；Clipboard API 不可用时降级为隐藏 textarea + execCommand */
+function copyText(text, statusEl) {
+  const ok = () => { if (statusEl) statusEl.textContent = '✓ 已复制到剪贴板，可粘贴到文件/云盘保存。'; };
+  const fail = () => { if (statusEl) statusEl.textContent = '自动复制失败，请长按下方内容手动选择复制。'; };
+  if (typeof navigator !== 'undefined' && navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).then(ok).catch(() => fallbackCopy(text, ok, fail));
+  } else {
+    fallbackCopy(text, ok, fail);
+  }
+}
+function fallbackCopy(text, ok, fail) {
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    const copied = document.execCommand && document.execCommand('copy');
+    ta.remove();
+    copied ? ok() : fail();
+  } catch (e) {
+    fail();
+  }
+}
+
+/** 导出面板：下载 + 复制两种方式（手机友好） */
+function openExportModal() {
+  if (!state.assets.length) { alert('暂无数据可导出。'); return; }
+  const payload = buildExportPayload();
+  const html = '<div class="hint" style="margin-bottom:10px">两种保存方式任选：<b>下载</b>会存到「下载」文件夹；<b>复制</b>可粘贴到备忘录/云盘（推荐手机使用）。</div>' +
+    '<div style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap">' +
+      '<button type="button" id="exp-download" class="btn btn-primary">⬇ 下载 .json 文件</button>' +
+      '<button type="button" id="exp-copy" class="btn btn-ghost">📋 复制备份内容</button>' +
+    '</div>' +
+    '<div class="hint" id="exp-status" style="margin-bottom:6px"></div>' +
+    '<textarea id="exp-text" readonly rows="10" spellcheck="false" ' +
+      'style="width:100%;font-size:11px;font-family:ui-monospace,Consolas,monospace;border:1px solid var(--line);border-radius:10px;padding:10px;box-sizing:border-box;background:#fafafa;color:var(--ink-2)">' + esc(payload) + '</textarea>';
+  openModal('导出备份', html, null, null);
+  $id('modal-ok').classList.add('hidden'); // 导出面板用面板内按钮，不需要底部保存
+  $id('exp-download').onclick = () => downloadJSON(payload);
+  $id('exp-copy').onclick = () => copyText(payload, $id('exp-status'));
+}
+
+/** 解析校验备份文本并弹出覆盖确认；通过后写入 state 与 localStorage */
+function importPayloadText(text) {
+  let data;
+  try {
+    data = JSON.parse(text);
+    if (!data || !Array.isArray(data.assets) || !Array.isArray(data.valuations)) {
+      throw new Error('结构不正确（缺少 assets/valuations）');
+    }
+  } catch (e) {
+    alert('导入失败：不是有效的 EcoCal 备份内容（' + e.message + '）');
+    return;
+  }
+  confirmAction('导入备份数据', '导入将覆盖当前全部数据（产品、价值记录、汇率设置），确定继续吗？', () => {
+    applyPayload(data);
+    renderAll();
+    alert('导入成功。');
+  });
+}
+
+/** 应用备份数据到 state 并持久化 */
+function applyPayload(data) {
+  state.assets = data.assets;
+  state.valuations = data.valuations;
+  state.settings = Object.assign({}, DEFAULT_SETTINGS, data.settings || {});
+  state.settings.rates = data.settings && data.settings.rates ? data.settings.rates : {};
+  closeModal(); // 关闭导入模态框（确认框已由 confirmAction 关闭）
+  saveState();
+}
+
+/** 导入面板：选择文件 或 粘贴 JSON（手机友好） */
+function openImportModal() {
+  const html = '<div class="hint" style="margin-bottom:12px">两种方式二选一，导入将<b>覆盖当前全部数据</b>：</div>' +
+    '<div style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap">' +
+      '<button type="button" id="imp-file" class="btn btn-ghost">📁 选择 .json 文件</button>' +
+      '<button type="button" id="imp-paste" class="btn btn-primary">📋 导入下方粘贴内容</button>' +
+    '</div>' +
+    '<div class="hint" style="margin-bottom:6px">或直接粘贴备份 JSON 文本（手机浏览器更快）：</div>' +
+    '<textarea id="imp-text" rows="8" spellcheck="false" placeholder="粘贴 ecocal-backup-xxx.json 的完整内容" ' +
+      'style="width:100%;font-size:11px;font-family:ui-monospace,Consolas,monospace;border:1px solid var(--line);border-radius:10px;padding:10px;box-sizing:border-box;outline:none;resize:vertical"></textarea>' +
+    '</div>';
+  openModal('导入备份', html, () => {
+    const text = $id('imp-text').value.trim();
+    if (!text) { alert('请先粘贴备份内容，或使用「选择 .json 文件」。'); return; }
+    importPayloadText(text);
+  }, '导入');
+  $id('imp-file').onclick = () => $id('import-input').click();
+} 
+
+function clearAll() {
+  confirmAction('清空数据', '将删除所有产品、价值记录与汇率设置，此操作不可撤销。确定清空吗？', () => {
+    state.assets = [];
+    state.valuations = [];
+    state.settings = Object.assign({}, DEFAULT_SETTINGS);
+    saveState(); renderAll();
+  }, '清空');
+}
+
+/* ---------------- 事件绑定 ---------------- */
+function bindEvents() {
+  bindModalButtons();
+
+  $id('btn-add-asset').onclick = () => openAssetForm(null);
+  $id('empty-add').onclick = () => openAssetForm(null);
+
+  // 列表事件委托
+  $id('asset-list').addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-action]');
+    if (!btn) return;
+    const card = btn.closest('.asset-card');
+    const assetId = card ? card.dataset.assetId : null;
+    const action = btn.dataset.action;
+    const asset = assetId ? getAsset(assetId) : null;
+    if (!asset) return;
+
+    switch (action) {
+      case 'addValuation':
+        openValuationForm(asset.id, null);
+        break;
+      case 'editAsset':
+        openAssetForm(asset.id);
+        break;
+      case 'toggleExpand': {
+        if (expanded.has(asset.id)) expanded.delete(asset.id);
+        else expanded.add(asset.id);
+        renderList();
+        break;
+      }
+      case 'deleteAsset':
+        confirmAction('删除产品', '将删除「' + asset.name + '」及其下 ' +
+          state.valuations.filter(v => v.assetId === asset.id).length + ' 条价值记录，且不可恢复。确定删除吗？', () => {
+          state.assets = state.assets.filter(a => a.id !== asset.id);
+          state.valuations = state.valuations.filter(v => v.assetId !== asset.id);
+          expanded.delete(asset.id);
+          saveState(); renderAll();
+        }, '删除');
+        break;
+      case 'editValuation': {
+        const v = state.valuations.find(x => x.id === btn.dataset.id);
+        if (!v) return;
+        openValuationForm(asset.id, v.id);
+        break;
+      }
+      case 'deleteValuation': {
+        const v = state.valuations.find(x => x.id === btn.dataset.id);
+        if (!v) return;
+        confirmAction('删除价值记录', '将删除「' + v.date + ' · ' + fmtMoney(v.value, asset.currency) +
+          '」这条记录，确定吗？', () => {
+          state.valuations = state.valuations.filter(x => x.id !== v.id);
+          saveState(); renderAll();
+        }, '删除');
+        break;
+      }
+    }
+  });
+
+  $id('filter-category').onchange = (e) => { filters.category = e.target.value; renderList(); };
+  $id('filter-currency').onchange = (e) => { filters.currency = e.target.value; renderList(); };
+  $id('filter-sort').onchange = (e) => { filters.sort = e.target.value; renderList(); };
+
+  $id('btn-settings').onclick = openSettings;
+  $id('btn-help').onclick = openHelp;
+  $id('btn-export').onclick = openExportModal;
+  $id('btn-import').onclick = openImportModal;
+  $id('import-input').onchange = (e) => {
+    const f = e.target.files && e.target.files[0];
+    if (f) {
+      const reader = new FileReader();
+      reader.onload = () => importPayloadText(reader.result);
+      reader.readAsText(f);
+    }
+    e.target.value = '';
+  };
+  $id('btn-clear').onclick = clearAll;
+  $id('demo-close').onclick = () => {
+    state.settings.demoDismissed = true;
+    saveState();
+    $id('demo-banner').classList.add('hidden');
+  };
+}
+
+/* ---------------- 演示数据 ---------------- */
+function daysAgoStr(n) {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+function seedDemo() {
+  const now = Date.now();
+  const mk = (name, category, subCategory, currency, principal, quantity, startDaysAgo, note) => ({
+    id: uid('asset_'), name, category, subCategory, currency, principal: round2(principal),
+    quantity: quantity, startDate: daysAgoStr(startDaysAgo), note,
+    minHoldDays: null, riskLevel: null, tPlusN: null,
+    createdAt: now, updatedAt: now,
+  });
+  const mkVal = (assetId, daysAgo, value, note) => ({
+    id: uid('valuation_'), assetId, date: daysAgoStr(daysAgo), value: round2(value), note, createdAt: now,
+  });
+
+  const a1 = mk('沪深300指数基金', 'fund', '指数型', 'CNY', 50000, 5000, 180, '定投组合主力仓');
+  const a2 = mk('某全球市场 QDII 基金', 'fund', 'QDII', 'USD', 2000, 120, 150, '美元资产配置');
+  const a3 = mk('苹果（AAPL）', 'stock', '美股', 'USD', 1850, 10, 210, '长期持有');
+  const a4 = mk('招商银行（A股）', 'stock', 'A股', 'CNY', 30000, 800, 90, '');
+  const a5 = mk('某 3 年期大额存单', 'deposit', '定期', 'CNY', 100000, null, 60, '年利率 2.6% 的单利存款');
+  const a6 = mk('国债（3年期）', 'bond', '国债', 'CNY', 40000, null, 120, '');
+  // 演示新字段：最低持有天数 / 风险等级 / T+n（minHoldDays=1 表示买入次日即可卖）
+  a1.minHoldDays = 30; a1.riskLevel = 'R3'; a1.tPlusN = 1;
+  a2.minHoldDays = 30; a2.riskLevel = 'R4'; a2.tPlusN = 3;
+  a3.minHoldDays = 1;  a3.riskLevel = 'R5'; a3.tPlusN = 0;
+  a4.minHoldDays = 1;  a4.riskLevel = 'R4'; a4.tPlusN = 1;   // A 股 T+1
+  a5.minHoldDays = 1095; a5.riskLevel = 'R1'; a5.tPlusN = 0;  // 三年期未到期 → 演示「不可卖」
+  a6.minHoldDays = 1095; a6.riskLevel = 'R1'; a6.tPlusN = 0;
+
+  const vals = [
+    mkVal(a1.id, 180, 50000, '买入'),
+    mkVal(a1.id, 120, 50800),
+    mkVal(a1.id, 60, 51900),
+    mkVal(a1.id, 0, 53350, '今日市值'),
+    mkVal(a2.id, 150, 2000, '买入'),
+    mkVal(a2.id, 30, 2110),
+    mkVal(a2.id, 0, 2168, '今日市值'),
+    mkVal(a3.id, 210, 1850, '买入'),
+    mkVal(a3.id, 100, 1970),
+    mkVal(a3.id, 0, 2060, '今日市值'),
+    mkVal(a4.id, 90, 30000, '买入'),
+    mkVal(a4.id, 0, 28400, '今日市值'),
+    mkVal(a6.id, 120, 40000, '买入'),
+    mkVal(a6.id, 0, 40280, '今日市值'),
+  ];
+
+  state.assets = [a1, a2, a3, a4, a5, a6];
+  state.valuations = vals;
+  state.settings = Object.assign({}, DEFAULT_SETTINGS, {
+    rates: { USD: 7.2, HKD: 0.92, EUR: 7.8, GBP: 9.1, JPY: 0.048 },
+  });
+  saveState();
+}
+
+/* ---------------- 帮助（使用指南 + 概念说明） ---------------- */
+const HELP_HTML = ''
+  + '<div class="help-content">'
+  + '<section class="help-section"><h4>如何使用</h4><ol>'
+  + '<li><b>添加产品</b>：记录你持有的产品（股票 / 基金 / 债券 / 存款等），填写名称、大类小类、币种、本金（买入成本）、开始持有日期；可选填最低持有天数、风险等级、T+n 到账天数、数量份额与备注。</li>'
+  + '<li><b>记录价值</b>：持有过程中，随时点击卡片上的「＋ 记价值」，把当天看到的账户市值记下来。记录得越多，时间线与走势图越完整，指标越准。</li>'
+  + '<li><b>查看指标</b>：每张卡片显示成本、最新市值、累计收益、收益率与年化（单利）；展开「查看时间线」可看到历史记录与走势折线图。</li>'
+  + '<li><b>统计与图表</b>：顶部汇总区显示全部资产的成本 / 市值 / 收益 / 整体年化（按基准币种），图表区有资产结构环图与市值排行。</li>'
+  + '<li><b>多币种</b>：在「汇率设置」中维护汇率（可点「获取最新汇率」联网更新，或手动填写），总市值、收益等跨币种统计都换算为基准币种。</li>'
+  + '<li><b>数据保存</b>：所有数据保存在浏览器本地（localStorage），关闭页面后重新打开仍会保留；建议定期「导出」备份，更换浏览器或清除浏览器数据前务必先导出。</li>'
+  + '</ol></section>'
+  + '<section class="help-section"><h4>金融概念说明</h4>'
+  + '<p><b>· 持有天数</b>：从「开始持有日期」到「最新价值记录日期」（无记录时算到今天）之间经过的自然日数。</p>'
+  + '<p><b>· 累计收益</b>：最新市值 − 买入成本（本金）。为正即盈利，为负即亏损。</p>'
+  + '<p><b>· 收益率</b>：累计收益 ÷ 本金。例如本金 1 万元、收益 300 元，则收益率 = 3%。</p>'
+  + '<p><b>· 年化收益率（年化）</b>：把某一段时间的收益率折算成「持有满一年」的收益率，便于横向比较不同产品。'
+  + '本工具默认用<b>单利口径</b>：年化 = 收益率 × 365 ÷ 持有天数。'
+  + '举例：30 天赚了 3%（0.03），年化 = 0.03 × 365 ÷ 30 ≈ 36.5%（注意：短期高收益不代表一年真能赚这么多，持有不足 30 天时工具会提示「仅供参考」）。'
+  + '同时提供<b>复利口径</b>作参考：年化 = (最新市值 ÷ 本金)^(365 ÷ 持有天数) − 1，复利假设每日滚动再投资。</p>'
+  + '<p><b>· 整体年化（汇总）</b>：把全部资产的收益按成本加权后统一折算的年化，用于评估整个组合。</p>'
+  + '<p><b>· 最低持有天数</b>：某些产品要求持有满一定天数才可赎回/卖出（如定开基金、定期存款）。达到前卡片显示「不可卖 · 还需 X 天」，达到后显示「可卖」。</p>'
+  + '<p><b>· T+n</b>：提交赎回/卖出申请后的到账时间，n 为交易日数。例如股票 A 股为 T+1（次日确认），货币基金有的 T+0 / T+1，QDII 基金常见 T+3 左右。A 股「T+1」也指当日买入次日才能卖出。</p>'
+  + '<p><b>· 风险等级（R1–R5）</b>：产品自身的风险分级，R1 最低（如存款、货币基金），R5 最高（如股票型、期货等），等级越高潜在波动与亏损可能越大。</p>'
+  + '<p><b>· 多币种与汇率</b>：不同币种的资产先按各自币种计算收益，再做「总价值统计」时由汇率换算为基准币种。汇率由你维护（可联网获取或手动填写），汇率变动会影响换算结果，因此换算后的收益同时包含价格变动与汇率变动的影响。</p>'
+  + '<p><b>· 红涨绿跌</b>：本工具按国内习惯，收益为正显示红色、为负显示绿色。</p>'
+  + '</section>'
+  + '<section class="help-section"><h4>数据说明</h4>'
+  + '<p>· 本工具<b>不做任何行情联网查询</b>（汇率联网仅用于换算统计，不是投资建议）；所有收益均为按你记录数据计算的实际/估算结果，仅供参考，不构成投资建议。</p>'
+  + '<p>· 数据存放在浏览器 localStorage 中，不在任何源码文件里；可通过「导出 / 导入」以 JSON 文件备份与迁移。</p>'
+  + '</section>'
+  + '</div>';
+
+function openHelp() {
+  openModal('帮助 · 使用指南与概念说明', HELP_HTML, () => closeModal(), '关闭');
+}
+
+/* ---------------- 启动 ---------------- */
+function init() {
+  bindEvents();
+  const hasData = loadState();
+  if (!hasData) {
+    seedDemo();
+    $id('demo-banner').classList.remove('hidden');
+  } else if (!state.settings.demoDismissed && state.assets.length) {
+    $id('demo-banner').classList.remove('hidden');
+  }
+  renderAll();
+
+  // PWA：注册 Service Worker（仅在 http(s) 环境生效，file:// 双击打开时自动跳过）
+  // 效果：把页面"添加到主屏幕"后，可全屏启动并离线使用
+  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.protocol === 'http:')) {
+    navigator.serviceWorker.register('./sw.js').catch(() => {
+      /* 注册失败静默处理，不影响正常使用 */
+    });
+  }
+
+  // 每次启动自动获取一次最新汇率（失败静默，不影响使用）
+  if (state.settings.autoFetchRates !== false) {
+    applyLatestRates({ silent: true });
+  }
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', init);
+} else {
+  init();
+}
+
+/* 暴露给测试/调试使用 */
+window.__EcoCal = {
+  Calc, state, uid, round2, dayDiff, todayStr, seedDemo, loadState, saveState,
+  fetchLatestRates, applyLatestRates, RISK_LEVELS, SORT_OPTIONS,
+  openSettings, openAssetForm, openValuationForm, openHelp,
+  openExportModal, openImportModal, importPayloadText, buildExportPayload,
+};
+
+})();
