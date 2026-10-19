@@ -189,6 +189,107 @@ const beforeLen = EcoCal.state.assets.length;
 EcoCal.importPayloadText('{not json');
 assert(EcoCal.state.assets.length === beforeLen, '非法 JSON 导入被拒绝且数据不变');
 
+/* ---- 4.11 交易引擎（加权平均 / 浮动 / 已实现盈亏） ---- */
+const tAsset = { id: 't1', name: '测试股票', category: 'stock', subCategory: 'A股', currency: 'CNY',
+  principal: 0, quantity: null, startDate: '2025-01-01', note: '', enableTrades: true, symbol: 'sh600000', lastPrice: null };
+const mkTrade = (type, date, qty, price, fee) => ({
+  id: EcoCal.uid('trade_'), assetId: 't1', type, date, quantity: qty, price, fee: fee || 0, note: '',
+});
+
+let trades = [
+  mkTrade('buy', '2025-01-01', 100, 10),
+  mkTrade('buy', '2025-01-10', 100, 12),
+];
+let pos = Calc.tradePosition(tAsset, trades, null);
+assert(pos.qty === 200 && pos.cost === 2200 && approx(pos.avgCost, 11), '两笔买入：数量200、成本2200、均价11');
+pos = Calc.tradePosition(tAsset, trades, 12);
+assert(approx(pos.marketValue, 2400) && approx(pos.float, 200), '现价12：市值2400、浮动200');
+
+trades.push(mkTrade('sell', '2025-02-01', 50, 13));
+pos = Calc.tradePosition(tAsset, trades, 12);
+assert(pos.qty === 150 && approx(pos.cost, 1650), '卖出50股后：数量150、成本1650（按均价11扣减）');
+assert(approx(pos.realized, 100), '已实现盈亏 = 50×(13−11) = 100');
+assert(approx(pos.totalProfit, pos.float + 100), '总盈亏 = 浮动 + 已实现');
+
+// 手续费口径
+pos = Calc.tradePosition(tAsset, [
+  mkTrade('buy', '2025-01-01', 100, 10, 5),
+  mkTrade('sell', '2025-02-01', 50, 13, 2),
+], null);
+assert(approx(pos.cost, 502.5), '买入含手续费1005，卖出扣50×10.05=502.5 → 成本502.5');
+assert(approx(pos.realized, 145.5), '卖出金额648 − 502.5 = 145.5');
+
+// 超卖防御（UI 另有拦截，计算层钳制不抛错）
+pos = Calc.tradePosition(tAsset, [mkTrade('buy', '2025-01-01', 50, 10), mkTrade('sell', '2025-02-01', 100, 12)], 12);
+assert(pos.qty === 0 && pos.cost === 0, '超卖被钳制为零持仓、零成本（不抛错）');
+
+// 清仓后再买
+pos = Calc.tradePosition(tAsset, [
+  mkTrade('buy', '2025-01-01', 100, 10),
+  mkTrade('sell', '2025-02-01', 100, 12),
+  mkTrade('buy', '2025-03-01', 100, 13),
+], 14);
+assert(pos.qty === 100 && approx(pos.cost, 1300) && approx(pos.realized, 200), '清仓再买：数量100、成本1300、已实现200');
+assert(pos.events.length === 3 && pos.events[1].trade.date === '2025-02-01', '交易事件按日期排序');
+
+/* ---- 4.12 汇总混合模式（价值快照 + 交易记录） ---- */
+const mixedAssets = [
+  { id: 'm1', name: '理财', category: 'wealth', subCategory: '固收类', currency: 'CNY', principal: 10000, quantity: null, startDate: '2025-01-01', note: '' },
+  { id: 'm2', name: '股票', category: 'stock', subCategory: 'A股', currency: 'CNY', principal: 0, quantity: null, startDate: '2025-01-01', note: '', enableTrades: true, symbol: 'sh600000', lastPrice: 12 },
+];
+const mixed = Calc.summary(mixedAssets, [
+  { id: 'v9', assetId: 'm1', date: '2025-06-01', value: 10300 },
+], { baseCurrency: 'CNY', rates: {} }, [
+  { id: 'tr1', assetId: 'm2', type: 'buy', date: '2025-01-01', quantity: 100, price: 10, fee: 0, note: '' },
+  { id: 'tr2', assetId: 'm2', type: 'sell', date: '2025-02-01', quantity: 50, price: 13, fee: 0, note: '' },
+]);
+assert(approx(mixed.totalProfit, 300 + 250), '混合总盈亏 = 理财300 + 股票(浮动100+已实现150) = 550');
+assert(approx(mixed.totalRealized, 150), '已实现盈亏汇总 = 150');
+assert(mixed.metrics.length === 2 && mixed.metrics.some(m => m.trade), '交易模式 metric 带 trade 信息');
+
+/* ---- 4.13 旧数据迁移为交易模式首笔买入 ---- */
+EcoCal.state.trades = [];
+const oldAsset = { id: 'mig1', name: '旧股票', category: 'stock', subCategory: 'A股', currency: 'CNY',
+  principal: 30000, quantity: 800, startDate: '2025-01-01', note: '', enableTrades: true };
+const migrated = EcoCal.migrateToTrades(oldAsset);
+assert(migrated === true && EcoCal.state.trades.length === 1 && EcoCal.state.trades[0].type === 'buy', '切换交易模式生成一笔买入');
+assert(approx(EcoCal.state.trades[0].price, 37.5) && EcoCal.state.trades[0].quantity === 800, '迁移单价 = 30000/800 = 37.5');
+assert(EcoCal.migrateToTrades(oldAsset) === false && EcoCal.state.trades.length === 1, '已有交易记录时不重复迁移');
+assert(EcoCal.migrateToTrades({ ...oldAsset, id: 'mig2', quantity: null }) === false, '无有效数量时不生成迁移交易');
+
+/* ---- 4.14 行情模块：代码标准化 + 接口响应解析（注入 fetcher） ---- */
+const norm = EcoCal.normalizeSymbol;
+assert(norm('sh600519').ok && norm('sh600519').code === 'sh600519', '代码标准化：sh 前缀保留');
+assert(norm('600519').code === 'sh600519', '纯6开头 → 沪 sh');
+assert(norm('000001').code === 'sz000001', '纯0开头 → 深 sz');
+assert(norm('300750').code === 'sz300750', '纯3开头 → 深 sz');
+assert(norm('hk00700').code === 'hk00700' && norm('usAAPL').code === 'usAAPL', '港股/美股前缀保留');
+assert(!norm('xyz').ok && !norm('123').ok, '非法代码被拒绝');
+
+const fakeQ = async () => ({ ok: true, text: async () => 'v_sh600519="1~贵州茅台~600519~1450.00~1448.00~…";' });
+const prices = await EcoCal.fetchQuote(['sh600519'], fakeQ);
+assert(approx(prices.sh600519, 1450), '行情解析：现价=1450');
+let quoteFail = false;
+try { await EcoCal.fetchQuote(['sh999999'], async () => ({ ok: true, text: async () => '' })); } catch (e) { quoteFail = true; }
+assert(quoteFail, '行情空响应抛错（调用方可提示）');
+
+const fakeK = async () => ({ ok: true, json: async () => ({
+  data: { sh600519: { qfqday: [['2026-01-02', 10, 10.5, 10.8, 9.9], ['2026-01-05', 10.5, 10.8, 11.0, 10.4]] } },
+}) });
+const kline = await EcoCal.fetchKline('sh600519', 60, fakeK);
+assert(kline.length === 2 && kline[1][2] === 10.8, '日K解析：返回 [date,open,close,high,low] 且收盘价正确');
+
+/* ---- 4.15 交易模式表单字段 ---- */
+EcoCal.state.assets = [{ id: 'tf1', name: '交易股票', category: 'stock', subCategory: 'A股', currency: 'CNY',
+  principal: 0, quantity: null, startDate: '2026-01-01', note: '', enableTrades: true, symbol: 'sh600036' }];
+EcoCal.state.trades = [{ id: 'trx', assetId: 'tf1', type: 'buy', date: '2026-01-01', quantity: 100, price: 10, fee: 0, note: '' }];
+EcoCal.openTradeForm('tf1', 'sell', null);
+const tradeHtml = elements['modal-body'].innerHTML || '';
+assert(tradeHtml.includes('id="t-qty"') && tradeHtml.includes('id="t-price"') && tradeHtml.includes('当前持仓'), '卖出表单包含数量/单价/持仓提示');
+EcoCal.openAssetForm('tf1');
+const assetForm2 = elements['modal-body'].innerHTML || '';
+assert(assetForm2.includes('id="f-mode"') && assetForm2.includes('id="f-symbol"'), '产品表单包含记账模式与行情代码字段');
+
 /* ---- 5. 持久化往返：seedDemo → save → load ---- */
 EcoCal.seedDemo();
 assert(EcoCal.state.assets.length === 6, '演示数据含 6 个产品');
