@@ -890,13 +890,13 @@ function bindModalButtons() {
 }
 
 /* ---- 产品表单 ---- */
-function categoryOptionsHTML() {
+function categoryOptionsHTML(selected) {
   return Object.keys(CATEGORIES).map(k =>
-    '<option value="' + k + '">' + CATEGORIES[k].label + '</option>').join('');
+    '<option value="' + k + '"' + (k === selected ? ' selected' : '') + '>' + CATEGORIES[k].label + '</option>').join('');
 }
-function subCategoryHTML(category) {
+function subCategoryHTML(category, selected) {
   const subs = CATEGORIES[category] ? CATEGORIES[category].sub : ['其他'];
-  return subs.map(s => '<option value="' + s + '">' + s + '</option>').join('');
+  return subs.map(s => '<option value="' + s + '"' + (s === selected ? ' selected' : '') + '>' + s + '</option>').join('');
 }
 function currencyOptionsHTML(selected) {
   const all = Object.assign({}, CURRENCIES, CUSTOM_CURRENCIES);
@@ -906,14 +906,21 @@ function currencyOptionsHTML(selected) {
 }
 
 function assetFormHTML(asset) {
-  const a = asset || { name: '', category: 'fund', subCategory: '', currency: 'CNY', principal: '', quantity: '', startDate: todayStr(), note: '', minHoldDays: '', riskLevel: '', tPlusN: '', enableTrades: false, symbol: '' };
+  const FIRST_CATEGORY = Object.keys(CATEGORIES)[0]; // 首个大类（股票）
+  const a = asset || { name: '', category: FIRST_CATEGORY, subCategory: '', currency: 'CNY', principal: '', quantity: '', startDate: todayStr(), note: '', minHoldDays: '', riskLevel: '', tPlusN: '', enableTrades: false, symbol: '' };
+  const catKey = CATEGORIES[a.category] ? a.category : FIRST_CATEGORY;
   const mode = a.enableTrades ? 'trades' : 'valuation';
-  const princLabel = mode === 'trades' ? '买入金额（首笔成本，可选）' : '本金 / 买入成本 *';
-  const qtyLabel = mode === 'trades' ? '首笔买入数量（可选，与金额同时填写时自动生成买入记录）' : '买入数量 / 份额（可选）';
+  // 价值快照模式：填本金（总成本）；交易记录模式：填首笔买入的单价 + 数量（金额 = 单价 × 数量）
+  const princField = mode === 'trades'
+    ? '<div class="field"><label>首笔买入价格（每股/每份单价，可选）</label><input id="f-price" type="number" min="0" step="any" placeholder="如 12.50">' +
+      '<div class="hint">金额 = 单价 × 数量，将自动生成首笔买入记录；已通过「＋ 买入」记过交易则无需填写</div></div>'
+    : '<div class="field"><label>本金 / 买入成本（' + (a.currency || 'CNY') + '）*</label><input id="f-principal" type="number" min="0" step="0.01" placeholder="0.00" value="' + esc(a.principal) + '">' +
+      '<div class="hint">一次性投入的总金额（非单股价格）</div></div>';
+  const qtyLabel = mode === 'trades' ? '首笔买入数量（股/份，可选）' : '买入数量 / 份额（可选）';
   return '<div class="form-grid">' +
     '<div class="field full"><label>产品名称 *</label><input id="f-name" type="text" placeholder="如：沪深300指数基金" value="' + esc(a.name) + '"></div>' +
-    '<div class="field"><label>大类 *</label><select id="f-category">' + categoryOptionsHTML() + '</select></div>' +
-    '<div class="field"><label>小类（子类）</label><select id="f-subcategory">' + subCategoryHTML(a.category || 'fund') + '</select></div>' +
+    '<div class="field"><label>大类 *</label><select id="f-category">' + categoryOptionsHTML(catKey) + '</select></div>' +
+    '<div class="field"><label>小类（子类）</label><select id="f-subcategory">' + subCategoryHTML(catKey, a.subCategory) + '</select></div>' +
     '<div class="field full" style="grid-column:1/-1"><label>记账模式</label>' +
       '<select id="f-mode">' +
         '<option value="valuation"' + (mode === 'valuation' ? ' selected' : '') + '>价值快照（默认）：记录本金 + 定期市值</option>' +
@@ -922,9 +929,9 @@ function assetFormHTML(asset) {
     '<div class="field"><label>币种 *</label><select id="f-currency">' + currencyOptionsHTML(a.currency || 'CNY') + '</select>' +
       '<div class="hint" id="f-currency-custom-hint" style="display:none">自定义币种请输入 3 位大写代码（如 KRW）</div></div>' +
     '<div class="field"><label>开始持有日期 *</label><input id="f-start" type="date" value="' + esc(a.startDate) + '"></div>' +
-    '<div class="field"><label>行情代码（可选）</label><input id="f-symbol" type="text" placeholder="sh600519 / sz000001 / hk00700 / usAAPL" value="' + esc(a.symbol || '') + '">' +
-      '<div class="hint">填写后可用「刷新行情」获取现价与近期走势；不填则手动记录</div></div>' +
-    '<div class="field"><label>' + princLabel + '</label><input id="f-principal" type="number" min="0" step="0.01" placeholder="0.00" value="' + esc(a.principal) + '"></div>' +
+    '<div class="field"><label>行情代码（可选）</label><input id="f-symbol" type="text" placeholder="A股 600519 / 000001，港股 00700，美股 KO / AAPL" value="' + esc(a.symbol || '') + '">' +
+      '<div class="hint">输入股票代码即可自动识别市场（如 KO=美股可口可乐）；填写后可用「刷新行情」获取现价与走势</div></div>' +
+    princField +
     '<div class="field"><label>' + qtyLabel + '</label><input id="f-quantity" type="number" min="0" step="any" placeholder="如股票股数、基金份额" value="' + esc(a.quantity) + '"></div>' +
     '<div class="field"><label>最低持有天数（可选）</label><input id="f-minhold" type="number" min="0" step="1" placeholder="如 30" value="' + esc(a.minHoldDays) + '">' +
       '<div class="hint">达到该天数前显示「不可卖」</div></div>' +
@@ -968,12 +975,26 @@ function submitAsset(assetId) {
     currency = prompt('请输入自定义币种代码（3 位大写字母，如 KRW）');
   }
   const startDate = $id('f-start').value;
-  const principalRaw = $id('f-principal').value.trim();
-  const principal = principalRaw === '' || !isFinite(parseFloat(principalRaw)) ? 0 : parseFloat(principalRaw);
-  const quantityRaw = $id('f-quantity').value.trim();
-  const quantity = quantityRaw === '' ? null : parseFloat(quantityRaw);
   const mode = $id('f-mode').value;
   const enableTrades = mode === 'trades';
+  let principal = 0;
+  if (!enableTrades) {
+    // 价值快照模式：本金 = 一次性投入总金额（必填为正）
+    const principalRaw = $id('f-principal').value.trim();
+    principal = principalRaw === '' || !isFinite(parseFloat(principalRaw)) ? 0 : parseFloat(principalRaw);
+  } else {
+    // 交易记录模式：首笔买入用「单价 × 数量」自动得出总金额
+    const priceEl = $id('f-price');
+    const priceRaw = priceEl ? priceEl.value.trim() : '';
+    const price = priceRaw === '' || !isFinite(parseFloat(priceRaw)) ? null : parseFloat(priceRaw);
+    const qtyTmp = $id('f-quantity').value.trim();
+    const qtyTmpN = qtyTmp === '' ? null : parseFloat(qtyTmp);
+    if (qtyTmpN != null && price != null && qtyTmpN > 0 && price > 0) {
+      principal = round2(price * qtyTmpN);
+    }
+  }
+  const quantityRaw = $id('f-quantity').value.trim();
+  const quantity = quantityRaw === '' ? null : parseFloat(quantityRaw);
   const symbolRaw = $id('f-symbol').value.trim();
   const symbol = symbolRaw === '' ? null : symbolRaw;
   const minHoldRaw = $id('f-minhold').value.trim();
@@ -1219,7 +1240,12 @@ function tradeTimelineHTML(asset, pos) {
 const MARKET_PREFIXES = { sh: 'A股·沪', sz: 'A股·深', bj: '北交所', hk: '港股', us: '美股' };
 const QUOTE_MIN_INTERVAL = 10 * 60 * 1000; // 自动刷新最小间隔：10 分钟
 
-/** 行情代码标准化：sh600519 / sz000001 / hk00700 / usAAPL；纯数字自动推断 A股/北交所 */
+/** 行情代码标准化：
+ *  - 标准前缀：sh600519 / sz000001 / hk00700 / usAAPL（前缀+主体原样）
+ *  - 纯 6 位数字：A股（6→sh，0/3→sz，4/8→bj）
+ *  - 纯 4-5 位数字：港股（如 00700 → hk00700）
+ *  - 纯 2-5 位字母：美股（如 KO → usKO，AAPL → usAAPL）
+ */
 function normalizeSymbol(input) {
   const raw = String(input || '').trim();
   if (!raw) return { ok: false, code: null, error: '请填写行情代码' };
@@ -1229,12 +1255,19 @@ function normalizeSymbol(input) {
     // 前缀统一小写，主体保留用户输入原样（美股代码如 usAAPL）
     return { ok: true, code: prefixed[1] + raw.slice(2), market: MARKET_PREFIXES[prefixed[1]] };
   }
-  if (/^\d{4,6}$/.test(raw)) {
+  if (/^\d{6}$/.test(raw)) {
     if (raw.startsWith('6')) return { ok: true, code: 'sh' + raw, market: MARKET_PREFIXES.sh };
     if (raw.startsWith('0') || raw.startsWith('3')) return { ok: true, code: 'sz' + raw, market: MARKET_PREFIXES.sz };
     if (raw.startsWith('4') || raw.startsWith('8')) return { ok: true, code: 'bj' + raw, market: MARKET_PREFIXES.bj };
+    return { ok: false, code: null, error: '无法识别的 A股 代码：以 6 开头为沪、0/3 开头为深、4/8 开头为北交所' };
   }
-  return { ok: false, code: null, error: '无法识别的代码：请用 sh600519 / sz000001 / hk00700 / usAAPL 格式' };
+  if (/^\d{4,5}$/.test(raw)) {
+    return { ok: true, code: 'hk' + raw, market: MARKET_PREFIXES.hk }; // 港股（如 00700 汇丰）
+  }
+  if (/^[a-zA-Z]{2,5}$/.test(raw)) {
+    return { ok: true, code: 'us' + raw.toUpperCase(), market: MARKET_PREFIXES.us }; // 美股（KO / AAPL 等）
+  }
+  return { ok: false, code: null, error: '无法识别的代码：请用 600519 / 000001 / 00700 / KO / AAPL 等格式，或带前缀 sh/sz/hk/us' };
 }
 
 /** 获取最新价：腾讯行情接口，返回 { code: price }；fetcher 可注入便于测试 */

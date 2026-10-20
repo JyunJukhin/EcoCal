@@ -264,7 +264,12 @@ assert(norm('600519').code === 'sh600519', '纯6开头 → 沪 sh');
 assert(norm('000001').code === 'sz000001', '纯0开头 → 深 sz');
 assert(norm('300750').code === 'sz300750', '纯3开头 → 深 sz');
 assert(norm('hk00700').code === 'hk00700' && norm('usAAPL').code === 'usAAPL', '港股/美股前缀保留');
-assert(!norm('xyz').ok && !norm('123').ok, '非法代码被拒绝');
+assert(norm('KO').code === 'usKO', '直接输入美股代码 KO → usKO（可口可乐）');
+assert(norm('ko').code === 'usKO' && norm('Ko').code === 'usKO', '美股代码大小写不敏感');
+assert(norm('AAPL').code === 'usAAPL', '直接输入 AAPL → usAAPL');
+assert(norm('00700').code === 'hk00700', '5位数字 → 港股');
+assert(norm('123').ok === false, '3位数字不是有效代码');
+assert(norm('xyz').code === 'usXYZ', '2-5位字母按美股处理（不存在则行情查询失败提示）');
 
 const fakeQ = async () => ({ ok: true, text: async () => 'v_sh600519="1~贵州茅台~600519~1450.00~1448.00~…";' });
 const prices = await EcoCal.fetchQuote(['sh600519'], fakeQ);
@@ -289,6 +294,13 @@ assert(tradeHtml.includes('id="t-qty"') && tradeHtml.includes('id="t-price"') &&
 EcoCal.openAssetForm('tf1');
 const assetForm2 = elements['modal-body'].innerHTML || '';
 assert(assetForm2.includes('id="f-mode"') && assetForm2.includes('id="f-symbol"'), '产品表单包含记账模式与行情代码字段');
+assert(assetForm2.includes('id="f-price"'), '交易模式表单含「首笔买入价格（单价）」输入');
+// 默认（新建）表单：大类与小类一致（均属股票），且价值快照模式显示本金输入
+EcoCal.openAssetForm(null);
+const newForm = elements['modal-body'].innerHTML || '';
+assert(newForm.includes('value="stock" selected>股票'), '新建默认大类=股票');
+assert(newForm.includes('id="f-subcategory"'), '新建表单包含小类下拉（与大类股票一致）');
+assert(newForm.includes('id="f-principal"'), '价值快照模式含本金输入');
 
 /* ---- 5. 持久化往返：seedDemo → save → load ---- */
 EcoCal.seedDemo();
