@@ -294,13 +294,27 @@ assert(tradeHtml.includes('id="t-qty"') && tradeHtml.includes('id="t-price"') &&
 EcoCal.openAssetForm('tf1');
 const assetForm2 = elements['modal-body'].innerHTML || '';
 assert(assetForm2.includes('id="f-mode"') && assetForm2.includes('id="f-symbol"'), '产品表单包含记账模式与行情代码字段');
-assert(assetForm2.includes('id="f-price"'), '交易模式表单含「首笔买入价格（单价）」输入');
-// 默认（新建）表单：大类与小类一致（均属股票），且价值快照模式显示本金输入
+assert(!assetForm2.includes('id="f-price"') && !assetForm2.includes('id="f-principal"'), '交易记录模式无需填写首笔买入/本金（监察表模式）');
+assert(assetForm2.includes('单股价格'), '监察表模式提示「买入/卖出均填单股价格」');
+// 默认（新建）表单：大类=股票、默认交易记录（监察表）、代码必填提示
 EcoCal.openAssetForm(null);
 const newForm = elements['modal-body'].innerHTML || '';
 assert(newForm.includes('value="stock" selected>股票'), '新建默认大类=股票');
 assert(newForm.includes('id="f-subcategory"'), '新建表单包含小类下拉（与大类股票一致）');
-assert(newForm.includes('id="f-principal"'), '价值快照模式含本金输入');
+assert(newForm.includes('value="trades" selected'), '新建股票默认交易记录（监察表）模式');
+assert(newForm.includes('id="f-symbol"') && newForm.includes('股票代码 *'), '股票代码为必填（选定即加入监察表）');
+assert(!newForm.includes('id="f-principal"'), '监察表模式下新建不含本金字段');
+
+/* ---- 4.16 市场→币种自动推断 + 证券信息解析 + 版本号 ---- */
+const stc = EcoCal.symbolToCurrency;
+assert(stc('sh600519') === 'CNY' && stc('sz000001') === 'CNY' && stc('bj830799') === 'CNY', 'A股/北交所 → CNY');
+assert(stc('hk00700') === 'HKD', '港股 → HKD');
+assert(stc('usKO') === 'USD' && stc('usAAPL') === 'USD', '美股 → USD');
+const info = await EcoCal.fetchStockInfo('sh600036', async () => ({
+  ok: true, text: async () => 'v_sh600036="1~招商银行~600036~43.05~42.76~…";',
+}));
+assert(info.name === '招商银行' && approx(info.price, 43.05), '证券信息解析：名称+现价');
+assert(/^v?\d+\.\d+\.\d+$/.test(EcoCal.APP_VERSION), '版本号格式为 x.y.z（当前 v' + EcoCal.APP_VERSION + '）');
 
 /* ---- 5. 持久化往返：seedDemo → save → load ---- */
 EcoCal.seedDemo();

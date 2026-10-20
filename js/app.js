@@ -9,6 +9,12 @@
 /* ---------------- 常量与配置 ---------------- */
 const STORAGE_KEY = 'ecocal.data.v1';
 
+/* 应用版本：主版本.次版本.补丁
+ * - 主版本：重大架构/功能（v3 多文件、v4 股票交易与行情）
+ * - 次版本：功能增强（v5 监察表模式与本次优化）
+ * - 补丁：缺陷修复 */
+const APP_VERSION = '5.0.0';
+
 const CURRENCIES = {
   CNY: { symbol: '¥',  name: '人民币' },
   USD: { symbol: '$',  name: '美元' },
@@ -907,32 +913,45 @@ function currencyOptionsHTML(selected) {
 
 function assetFormHTML(asset) {
   const FIRST_CATEGORY = Object.keys(CATEGORIES)[0]; // 首个大类（股票）
+  const isNew = !asset;
   const a = asset || { name: '', category: FIRST_CATEGORY, subCategory: '', currency: 'CNY', principal: '', quantity: '', startDate: todayStr(), note: '', minHoldDays: '', riskLevel: '', tPlusN: '', enableTrades: false, symbol: '' };
   const catKey = CATEGORIES[a.category] ? a.category : FIRST_CATEGORY;
-  const mode = a.enableTrades ? 'trades' : 'valuation';
-  // 价值快照模式：填本金（总成本）；交易记录模式：填首笔买入的单价 + 数量（金额 = 单价 × 数量）
-  const princField = mode === 'trades'
-    ? '<div class="field"><label>首笔买入价格（每股/每份单价，可选）</label><input id="f-price" type="number" min="0" step="any" placeholder="如 12.50">' +
-      '<div class="hint">金额 = 单价 × 数量，将自动生成首笔买入记录；已通过「＋ 买入」记过交易则无需填写</div></div>'
+  // 新建默认记账模式：股票默认「交易记录」（监察表），其他类别默认「价值快照」
+  const mode = isNew
+    ? (catKey === 'stock' ? 'trades' : 'valuation')
+    : (a.enableTrades ? 'trades' : 'valuation');
+  const isStock = catKey === 'stock';
+
+  // 买入信息字段：
+  //  - 交易记录模式（股票监察表）：无需在添加时填写，保存后从卡片「＋ 买入」录入（统一填单股价格）
+  //  - 价值快照模式：填本金（总金额）+ 可选数量
+  const buyFields = mode === 'trades'
+    ? '<div class="field full"><div class="hint" style="color:var(--ink-2);line-height:1.7">加入监察列表后，点卡片上的「＋ 买入」录入首笔买入；<b>买入/卖出均填写单股价格</b>（成交单价 × 数量自动计金额）。也可随时在「✎ 现价」更新当前股价。</div></div>'
     : '<div class="field"><label>本金 / 买入成本（' + (a.currency || 'CNY') + '）*</label><input id="f-principal" type="number" min="0" step="0.01" placeholder="0.00" value="' + esc(a.principal) + '">' +
-      '<div class="hint">一次性投入的总金额（非单股价格）</div></div>';
-  const qtyLabel = mode === 'trades' ? '首笔买入数量（股/份，可选）' : '买入数量 / 份额（可选）';
+      '<div class="hint">一次性投入的总金额（非单股价格）</div></div>' +
+      '<div class="field"><label>买入数量 / 份额（可选）</label><input id="f-quantity" type="number" min="0" step="any" placeholder="如股票股数、基金份额" value="' + esc(a.quantity) + '"></div>';
+
+  const symLabel = isStock ? '股票代码 *' : '行情代码（可选）';
+  const symPlaceholder = isStock
+    ? 'A股 600519 / 000001，港股 00700，美股 KO / AAPL'
+    : 'A股 600519 / 000001，港股 00700，美股 KO / AAPL（不填则手动记录）';
+
   return '<div class="form-grid">' +
-    '<div class="field full"><label>产品名称 *</label><input id="f-name" type="text" placeholder="如：沪深300指数基金" value="' + esc(a.name) + '"></div>' +
+    '<div class="field full"><label>产品名称 *</label><input id="f-name" type="text" placeholder="如：沪深300指数基金（输入代码后自动带出名称，可修改）" value="' + esc(a.name) + '"></div>' +
     '<div class="field"><label>大类 *</label><select id="f-category">' + categoryOptionsHTML(catKey) + '</select></div>' +
     '<div class="field"><label>小类（子类）</label><select id="f-subcategory">' + subCategoryHTML(catKey, a.subCategory) + '</select></div>' +
     '<div class="field full" style="grid-column:1/-1"><label>记账模式</label>' +
       '<select id="f-mode">' +
-        '<option value="valuation"' + (mode === 'valuation' ? ' selected' : '') + '>价值快照（默认）：记录本金 + 定期市值</option>' +
-        '<option value="trades"' + (mode === 'trades' ? ' selected' : '') + '>交易记录：多次买入 / 部分卖出（含平均成本与已实现盈亏）</option>' +
-      '</select><div class="hint" id="f-mode-hint">切换模式不删除数据；旧的本金+数量会自动转为首笔买入记录。</div></div>' +
-    '<div class="field"><label>币种 *</label><select id="f-currency">' + currencyOptionsHTML(a.currency || 'CNY') + '</select>' +
+        '<option value="valuation"' + (mode === 'valuation' ? ' selected' : '') + '>价值快照：记录本金 + 定期市值</option>' +
+        '<option value="trades"' + (mode === 'trades' ? ' selected' : '') + '>交易记录（监察表）：多次买入 / 部分卖出，买卖填单股价格</option>' +
+      '</select><div class="hint" id="f-mode-hint">' + (isStock && mode === 'trades' ? '股票默认交易记录模式：先加入监察表，再逐笔点「＋ 买入 / − 卖出」。' : '切换模式不删除数据；旧的本金+数量会自动转为首笔买入记录。') + '</div></div>' +
+    '<div class="field"><label>币种 *（按代码自动识别，可改）</label><select id="f-currency">' + currencyOptionsHTML(a.currency || (isStock ? 'CNY' : 'CNY')) + '</select>' +
       '<div class="hint" id="f-currency-custom-hint" style="display:none">自定义币种请输入 3 位大写代码（如 KRW）</div></div>' +
-    '<div class="field"><label>开始持有日期 *</label><input id="f-start" type="date" value="' + esc(a.startDate) + '"></div>' +
-    '<div class="field"><label>行情代码（可选）</label><input id="f-symbol" type="text" placeholder="A股 600519 / 000001，港股 00700，美股 KO / AAPL" value="' + esc(a.symbol || '') + '">' +
-      '<div class="hint">输入股票代码即可自动识别市场（如 KO=美股可口可乐）；填写后可用「刷新行情」获取现价与走势</div></div>' +
-    princField +
-    '<div class="field"><label>' + qtyLabel + '</label><input id="f-quantity" type="number" min="0" step="any" placeholder="如股票股数、基金份额" value="' + esc(a.quantity) + '"></div>' +
+    '<div class="field"><label>开始持有日期</label><input id="f-start" type="date" value="' + esc(a.startDate) + '">' +
+      '<div class="hint">监察表加入日期；实际持有从首笔买入起算</div></div>' +
+    '<div class="field full"><label>' + symLabel + '</label><input id="f-symbol" type="text" placeholder="' + symPlaceholder + '" value="' + esc(a.symbol || '') + '">' +
+      '<div class="hint">输入代码后自动识别市场、自动选择币种，并尝试自动带出名称（网络不可用时手动填写）</div></div>' +
+    buyFields +
     '<div class="field"><label>最低持有天数（可选）</label><input id="f-minhold" type="number" min="0" step="1" placeholder="如 30" value="' + esc(a.minHoldDays) + '">' +
       '<div class="hint">达到该天数前显示「不可卖」</div></div>' +
     '<div class="field"><label>风险等级（可选）</label><select id="f-risk">' +
@@ -960,9 +979,36 @@ function openAssetForm(assetId) {
   };
   modeSel.onchange = () => {
     $id('f-mode-hint').textContent = modeSel.value === 'trades'
-      ? '交易模式下，下方「买入金额 + 数量」可作为首笔买入一并生成；也可保存后在卡片上「＋买入」逐笔添加。'
+      ? '交易记录模式：先加入监察表，再逐笔点「＋ 买入 / − 卖出」，买卖均填单股价格。'
       : '价值快照模式保持原有记账方式（本金 + 定期市值）；切换不删除任何数据。';
   };
+  // 股票监察表：输入代码自动识别市场并联动币种与名称
+  const symSel = $id('f-symbol');
+  if (symSel) {
+    symSel.onchange = () => autoFillFromCode(symSel, curSel, $id('f-name'));
+    symSel.onblur = () => autoFillFromCode(symSel, curSel, $id('f-name'));
+  }
+}
+
+/** 根据行情代码自动带出：币种（按市场）+ 名称（联网获取，失败静默） */
+async function autoFillFromCode(input, curSel, nameEl) {
+  const raw = input.value.trim();
+  if (!raw) return;
+  const norm = normalizeSymbol(raw);
+  if (!norm.ok) return;
+  // 自动切换币种（仅当当前选项存在时）
+  const autoCur = symbolToCurrency(norm.code);
+  if (curSel && curSel.querySelector('option[value="' + autoCur + '"]')) {
+    curSel.value = autoCur;
+    $id('f-currency-custom-hint').style.display = 'none';
+  }
+  // 联网带出名称（用户未手动填写时才覆盖）
+  if (nameEl && !nameEl.value.trim()) {
+    try {
+      const info = await fetchStockInfo(norm.code);
+      if (info.name) nameEl.value = info.name;
+    } catch (e) { /* 网络不可用时保持手动填写 */ }
+  }
 }
 
 function submitAsset(assetId) {
@@ -977,26 +1023,23 @@ function submitAsset(assetId) {
   const startDate = $id('f-start').value;
   const mode = $id('f-mode').value;
   const enableTrades = mode === 'trades';
-  let principal = 0;
-  if (!enableTrades) {
-    // 价值快照模式：本金 = 一次性投入总金额（必填为正）
-    const principalRaw = $id('f-principal').value.trim();
-    principal = principalRaw === '' || !isFinite(parseFloat(principalRaw)) ? 0 : parseFloat(principalRaw);
-  } else {
-    // 交易记录模式：首笔买入用「单价 × 数量」自动得出总金额
-    const priceEl = $id('f-price');
-    const priceRaw = priceEl ? priceEl.value.trim() : '';
-    const price = priceRaw === '' || !isFinite(parseFloat(priceRaw)) ? null : parseFloat(priceRaw);
-    const qtyTmp = $id('f-quantity').value.trim();
-    const qtyTmpN = qtyTmp === '' ? null : parseFloat(qtyTmp);
-    if (qtyTmpN != null && price != null && qtyTmpN > 0 && price > 0) {
-      principal = round2(price * qtyTmpN);
-    }
-  }
-  const quantityRaw = $id('f-quantity').value.trim();
-  const quantity = quantityRaw === '' ? null : parseFloat(quantityRaw);
+  const isStock = category === 'stock';
   const symbolRaw = $id('f-symbol').value.trim();
   const symbol = symbolRaw === '' ? null : symbolRaw;
+  // 股票监察表：代码必填（仅需选定股票即可加入）
+  if (isStock && !symbol) {
+    alert('股票只需填写代码即可加入监察表（如 A股 600519、港股 00700、美股 KO），买入信息之后再点「＋ 买入」录入。');
+    return;
+  }
+  let principal = 0;
+  let quantity = null;
+  if (!enableTrades) {
+    // 价值快照模式：本金 = 一次性投入总金额（必填为正）+ 可选数量
+    const principalRaw = $id('f-principal').value.trim();
+    principal = principalRaw === '' || !isFinite(parseFloat(principalRaw)) ? 0 : parseFloat(principalRaw);
+    const quantityRaw = $id('f-quantity').value.trim();
+    quantity = quantityRaw === '' ? null : parseFloat(quantityRaw);
+  }
   const minHoldRaw = $id('f-minhold').value.trim();
   const minHoldDays = minHoldRaw === '' ? null : Math.floor(parseFloat(minHoldRaw));
   const riskLevel = $id('f-risk').value || null;
@@ -1268,6 +1311,29 @@ function normalizeSymbol(input) {
     return { ok: true, code: 'us' + raw.toUpperCase(), market: MARKET_PREFIXES.us }; // 美股（KO / AAPL 等）
   }
   return { ok: false, code: null, error: '无法识别的代码：请用 600519 / 000001 / 00700 / KO / AAPL 等格式，或带前缀 sh/sz/hk/us' };
+}
+
+/** 按行情代码自动推断币种（按市场）：sh/sz/bj → CNY，hk → HKD，us → USD */
+function symbolToCurrency(code) {
+  const lower = String(code || '').toLowerCase();
+  if (lower.startsWith('hk')) return 'HKD';
+  if (lower.startsWith('us')) return 'USD';
+  return 'CNY';
+}
+
+/** 获取单只股票的证券信息（名称 + 现价），复用腾讯行情文本接口 */
+async function fetchStockInfo(code, fetcher) {
+  const f = fetcher || window.fetch;
+  if (typeof f !== 'function') throw new Error('当前环境不支持联网');
+  const resp = await f('https://qt.gtimg.cn/q=' + code);
+  if (!resp.ok) throw new Error('HTTP ' + resp.status);
+  const text = await resp.text();
+  const m = new RegExp('v_' + code + '="([^"]*)"').exec(text);
+  if (!m) throw new Error('查无此代码：' + code);
+  const fields = m[1].split('~'); // [1]=证券简称, [3]=最新价
+  const name = fields[1] || '';
+  const price = parseFloat(fields[3]);
+  return { name, price: isFinite(price) && price > 0 ? roundQty(price) : null };
 }
 
 /** 获取最新价：腾讯行情接口，返回 { code: price }；fetcher 可注入便于测试 */
@@ -1826,12 +1892,13 @@ const HELP_HTML = ''
   + '<p><b>· 多币种与汇率</b>：不同币种的资产先按各自币种计算收益，再做「总价值统计」时由汇率换算为基准币种。汇率由你维护（可联网获取或手动填写），汇率变动会影响换算结果，因此换算后的收益同时包含价格变动与汇率变动的影响。</p>'
   + '<p><b>· 红涨绿跌</b>：本工具按国内习惯，收益为正显示红色、为负显示绿色。</p>'
   + '</section>'
-  + '<section class="help-section"><h4>交易记录模式与行情（v4 新增）</h4>'
-  + '<p><b>· 记账模式</b>：编辑产品时可选择「价值快照」或「交易记录」。价值快照：记录本金 + 定期市值，适合不频繁买卖的产品；交易记录：记录每次买入/卖出（数量/单价/手续费），自动计算持仓数量、平均成本与盈亏，适合股票、定投基金等。切换模式不删除数据，旧的本金+数量会自动转为首笔买入记录。</p>'
+  + '<section class="help-section"><h4>交易记录模式与行情（v4/v5）</h4>'
+  + '<p><b>· 记账模式</b>：编辑产品时可选择「价值快照」或「交易记录」。价值快照：记录本金 + 定期市值，适合不频繁买卖的产品；交易记录：记录每次买入/卖出（数量/单价/手续费），自动计算持仓数量、平均成本与盈亏。切换模式不删除数据，旧的本金+数量会自动转为首笔买入记录。</p>'
+  + '<p><b>· 股票监察表（v5）</b>：添加股票时<b>只需填写股票代码</b>即可加入——程序自动识别市场（A股/港股/美股/北交所）、自动选择币种，并尝试自动带出证券名称（网络不可用时手动填写）。加入后为"自选监察"状态，随时点卡片「＋ 买入」录入买入（或「− 卖出」），<b>买入/卖出统一填写单股价格</b>，金额自动按数量计算。</p>'
   + '<p><b>· 平均成本（加权平均）</b>：全部持仓摊薄后的单位成本 = 持仓成本 ÷ 持仓数量。买入增加成本；卖出按「卖出数量 × 当时平均成本」从持仓成本中扣减，因此买得贵/便宜都会摊进后续成本。</p>'
   + '<p><b>· 已实现盈亏</b>：每笔卖出"落袋"的盈亏 = 卖出金额（扣除手续费）− 卖出数量 × 卖出时平均成本。清仓后再买入会按新成本继续，不影响历史已实现盈亏。</p>'
   + '<p><b>· 浮动盈亏与总盈亏</b>：浮动盈亏 = 当前市值 − 持仓成本（随现价波动）；总盈亏 = 浮动 + 已实现。部分卖出会"锁定"一部分已实现盈亏，因此看总盈亏比只看市值更能反映整体战绩。</p>'
-  + '<p><b>· 行情代码</b>：填写代码后可联网获取现价与近期走势。格式：<code>sh600519</code>（沪）/ <code>sz000001</code>（深）/ <code>hk00700</code>（港股）/ <code>usAAPL</code>（美股）；纯数字自动识别市场（6→沪、0/3→深、4/8→北交所）。点「⟳ 刷新行情」获取；接口来自腾讯公开免费服务，仅作记录与计算参考。行情不可用时点「✎ 现价」手动录入。</p>'
+  + '<p><b>· 行情代码</b>：直接输入即可——A股 600519 / 000001（自动识别）· 港股 00700 · 美股 KO / AAPL（大小写不敏感）；也支持带前缀写法 sh600519 / usAAPL。点「⟳ 刷新行情」获取现价与近期走势；接口来自腾讯公开免费服务，仅作记录与计算参考。行情不可用时点「✎ 现价」手动录入。</p>'
   + '<p><b>· 自动刷新</b>：可在「汇率设置」面板开关"打开页面自动刷新行情"，每只产品 10 分钟内最多自动刷新一次，避免频繁请求第三方接口。</p>'
   + '</section>'
   + '<section class="help-section"><h4>数据说明</h4>'
@@ -1847,6 +1914,8 @@ function openHelp() {
 /* ---------------- 启动 ---------------- */
 function init() {
   bindEvents();
+  const versionEl = $id('app-version');
+  if (versionEl) versionEl.textContent = 'v' + APP_VERSION;
   const hasData = loadState();
   if (!hasData) {
     seedDemo();
@@ -1883,12 +1952,13 @@ if (document.readyState === 'loading') {
 
 /* 暴露给测试/调试使用 */
 window.__EcoCal = {
-  Calc, state, uid, round2, roundQty, roundPrice, dayDiff, todayStr, seedDemo, loadState, saveState,
+  APP_VERSION, Calc, state, uid, round2, roundQty, roundPrice, dayDiff, todayStr, seedDemo, loadState, saveState,
   fetchLatestRates, applyLatestRates, RISK_LEVELS, SORT_OPTIONS,
   openSettings, openAssetForm, openValuationForm, openTradeForm, openHelp,
   openExportModal, openImportModal, importPayloadText, buildExportPayload,
   migrateToTrades,
-  normalizeSymbol, fetchQuote, fetchKline, refreshQuoteForAsset, refreshAllQuotes, manualPriceline,
+  normalizeSymbol, symbolToCurrency, fetchQuote, fetchKline, fetchStockInfo,
+  refreshQuoteForAsset, refreshAllQuotes, manualPriceline,
 };
 
 })();
