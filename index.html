@@ -22,7 +22,8 @@
       <button id="btn-export" class="btn btn-ghost">导出</button>
       <button id="btn-settings" class="btn btn-ghost">汇率设置</button>
       <button id="btn-clear" class="btn btn-danger">清空数据</button>
-      <button id="btn-add-asset" class="btn btn-primary">＋ 添加产品</button>
+      <button id="btn-add-stock" class="btn btn-primary">＋ 股票</button>
+      <button id="btn-add-asset" class="btn btn-ghost">＋ 其他产品</button>
     </div>
   </div>
 </header>
@@ -68,8 +69,11 @@
   <section class="empty-state hidden" id="empty-state">
     <div class="icon">📈</div>
     <h3>还没有任何持仓记录</h3>
-    <p>点击「添加产品」记录你的第一笔投资（股票、基金、债券、存款等），持有过程中随时记下当前市值，工具会自动计算收益率与年化。</p>
-    <button id="empty-add" class="btn btn-primary">＋ 添加产品</button>
+    <p>股票走「＋ 股票」监察表入口（只需填代码即可加入）；基金、债券、存款等走「＋ 其他产品」。持有过程中随时记录市值或买卖，工具自动计算收益率与年化。</p>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+      <button id="empty-add-stock" class="btn btn-primary">＋ 股票（监察表）</button>
+      <button id="empty-add-other" class="btn btn-ghost">＋ 添加其他产品</button>
+    </div>
   </section>
 </main>
 

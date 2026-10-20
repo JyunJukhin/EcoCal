@@ -296,14 +296,20 @@ const assetForm2 = elements['modal-body'].innerHTML || '';
 assert(assetForm2.includes('id="f-mode"') && assetForm2.includes('id="f-symbol"'), '产品表单包含记账模式与行情代码字段');
 assert(!assetForm2.includes('id="f-price"') && !assetForm2.includes('id="f-principal"'), '交易记录模式无需填写首笔买入/本金（监察表模式）');
 assert(assetForm2.includes('单股价格'), '监察表模式提示「买入/卖出均填单股价格」');
-// 默认（新建）表单：大类=股票、默认交易记录（监察表）、代码必填提示
-EcoCal.openAssetForm(null);
-const newForm = elements['modal-body'].innerHTML || '';
-assert(newForm.includes('value="stock" selected>股票'), '新建默认大类=股票');
-assert(newForm.includes('id="f-subcategory"'), '新建表单包含小类下拉（与大类股票一致）');
-assert(newForm.includes('value="trades" selected'), '新建股票默认交易记录（监察表）模式');
-assert(newForm.includes('id="f-symbol"') && newForm.includes('股票代码 *'), '股票代码为必填（选定即加入监察表）');
-assert(!newForm.includes('id="f-principal"'), '监察表模式下新建不含本金字段');
+// 股票入口：监察表
+EcoCal.openAssetForm(null, { category: 'stock', mode: 'trades' });
+const stockForm = elements['modal-body'].innerHTML || '';
+assert(stockForm.includes('value="stock" selected>股票'), '股票入口默认大类=股票');
+assert(stockForm.includes('value="trades" selected'), '股票入口默认交易记录（监察表）模式');
+assert(stockForm.includes('id="f-symbol"') && stockForm.includes('股票代码 *'), '股票入口代码必填（选定即加入监察表）');
+assert(!stockForm.includes('id="f-principal"'), '股票监察表新建不含本金字段');
+// 其他产品入口：价值快照（如基金）
+EcoCal.openAssetForm(null, { category: 'fund', mode: 'valuation' });
+const fundForm = elements['modal-body'].innerHTML || '';
+assert(fundForm.includes('value="fund" selected>基金'), '其他产品入口默认大类=基金');
+assert(fundForm.includes('value="valuation" selected'), '其他产品入口默认价值快照模式');
+assert(fundForm.includes('id="f-principal"'), '基金入口含本金（价值快照）输入');
+assert(!fundForm.includes('股票代码 *') && fundForm.includes('行情代码（可选）'), '基金入口行情代码为可选');
 
 /* ---- 4.16 市场→币种自动推断 + 证券信息解析 + 版本号 ---- */
 const stc = EcoCal.symbolToCurrency;

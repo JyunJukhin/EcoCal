@@ -13,7 +13,7 @@ const STORAGE_KEY = 'ecocal.data.v1';
  * - 主版本：重大架构/功能（v3 多文件、v4 股票交易与行情）
  * - 次版本：功能增强（v5 监察表模式与本次优化）
  * - 补丁：缺陷修复 */
-const APP_VERSION = '5.0.0';
+const APP_VERSION = '5.1.0';
 
 const CURRENCIES = {
   CNY: { symbol: '¥',  name: '人民币' },
@@ -911,14 +911,17 @@ function currencyOptionsHTML(selected) {
     + '<option value="__custom__">＋ 自定义币种…</option>';
 }
 
-function assetFormHTML(asset) {
-  const FIRST_CATEGORY = Object.keys(CATEGORIES)[0]; // 首个大类（股票）
+function assetFormHTML(asset, preset) {
+  const FIRST_CATEGORY = Object.keys(CATEGORIES)[0];
   const isNew = !asset;
-  const a = asset || { name: '', category: FIRST_CATEGORY, subCategory: '', currency: 'CNY', principal: '', quantity: '', startDate: todayStr(), note: '', minHoldDays: '', riskLevel: '', tPlusN: '', enableTrades: false, symbol: '' };
+  // 新建默认：股票入口 → 监察表（交易记录）；其他入口（基金/债券/…）→ 价值快照
+  const defCategory = (preset && preset.category) || 'fund';
+  const defMode = (preset && preset.mode) || 'valuation';
+  const a = asset || { name: '', category: defCategory, subCategory: '', currency: 'CNY', principal: '', quantity: '', startDate: todayStr(), note: '', minHoldDays: '', riskLevel: '', tPlusN: '', enableTrades: defMode === 'trades', symbol: '' };
   const catKey = CATEGORIES[a.category] ? a.category : FIRST_CATEGORY;
-  // 新建默认记账模式：股票默认「交易记录」（监察表），其他类别默认「价值快照」
+  // 新建默认记账模式：股票入口固定交易记录（监察表），其余默认价值快照
   const mode = isNew
-    ? (catKey === 'stock' ? 'trades' : 'valuation')
+    ? (preset && preset.mode ? preset.mode : (catKey === 'stock' ? 'trades' : 'valuation'))
     : (a.enableTrades ? 'trades' : 'valuation');
   const isStock = catKey === 'stock';
 
@@ -964,9 +967,9 @@ function assetFormHTML(asset) {
   '</div>';
 }
 
-function openAssetForm(assetId) {
+function openAssetForm(assetId, preset) {
   const asset = assetId ? getAsset(assetId) : null;
-  openModal((asset ? '编辑产品 · ' + asset.name : '添加产品'), assetFormHTML(asset), () => submitAsset(assetId));
+  openModal((asset ? '编辑产品 · ' + asset.name : '添加产品'), assetFormHTML(asset, preset), () => submitAsset(assetId));
 
   // 联动：大类变化刷新小类；币种切换显示自定义输入提示；记账模式切换更新提示
   const catSel = $id('f-category');
@@ -1686,8 +1689,10 @@ function clearAll() {
 function bindEvents() {
   bindModalButtons();
 
-  $id('btn-add-asset').onclick = () => openAssetForm(null);
-  $id('empty-add').onclick = () => openAssetForm(null);
+  $id('btn-add-asset').onclick = () => openAssetForm(null, { category: 'fund', mode: 'valuation' });
+  $id('btn-add-stock').onclick = () => openAssetForm(null, { category: 'stock', mode: 'trades' });
+  $id('empty-add-other').onclick = () => openAssetForm(null, { category: 'fund', mode: 'valuation' });
+  $id('empty-add-stock').onclick = () => openAssetForm(null, { category: 'stock', mode: 'trades' });
 
   // 列表事件委托
   $id('asset-list').addEventListener('click', (e) => {
