@@ -410,10 +410,13 @@ assert(fxPos.qty === 1500 && fxPos.received === 3650, '演示外币余额 1500 U
 // 5.1 整页渲染（renderAll）产物检查：卡片/汇总/图表 HTML
 EcoCal.renderAll();
 const listHtml = elements['asset-list'].innerHTML || '';
-const summaryHtml = elements['summary-grid'].innerHTML || '';
+const heroHtml = elements['stats-hero'].innerHTML || '';
+const tilesHtml = elements['stats-tiles'].innerHTML || '';
 const ringHtml = elements['ring-chart'].innerHTML || '';
 const barHtml = elements['bar-chart'].innerHTML || '';
-assert(summaryHtml.includes('总市值') && summaryHtml.includes('总盈亏'), '汇总卡渲染：总市值/总盈亏');
+assert(heroHtml.includes('总市值') && heroHtml.includes('累计收益') && heroHtml.includes('整体年化'), '统计页 Hero 渲染：总市值/累计收益/整体年化');
+assert(tilesHtml.includes('累计投入') && tilesHtml.includes('总盈亏') && tilesHtml.includes('总收益率'), '统计页指标磁贴渲染：投入/盈亏/收益率');
+assert(ringHtml.includes('总市值') && ringHtml.includes('<svg'), '环图渲染：圆心显示总市值');
 assert(listHtml.includes('持仓金额') && listHtml.includes('累计投入（成本）'), '非股票卡片侧重金额指标（持仓金额/累计投入）');
 assert(listHtml.includes('USD/CNY') && listHtml.includes('外币余额') && listHtml.includes('当前汇率'), '外币卡片显示币种对与余额、当前汇率');
 assert(listHtml.includes('持仓数量') && listHtml.includes('平均成本') && listHtml.includes('现价'), '股票卡片显示数量/均价/现价');

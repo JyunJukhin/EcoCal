@@ -33,36 +33,35 @@
     <button type="button" class="tab" data-tab="stats" role="tab">统计</button>
   </nav>
 
-  <!-- 统计面板：汇总 + 图表（独立于产品列表） -->
+  <!-- 统计面板：资产速览 + 图表（独立于产品列表） -->
   <section class="tab-panel hidden" id="panel-stats" role="tabpanel">
-    <!-- 汇总区 -->
-    <section class="summary-grid" id="summary-grid"></section>
+    <!-- 资产速览：Hero + 指标磁贴 + 币种分布 -->
+    <section class="stats-hero" id="stats-hero"></section>
+    <section class="stats-tiles" id="stats-tiles"></section>
     <div class="currency-subtotals" id="currency-subtotals"></div>
 
-    <!-- 图表区 -->
+    <!-- 图表区：2 列自适应卡片 -->
     <section class="charts-grid">
-      <div class="card">
-        <h2>资产结构（基准币种）</h2>
+      <div class="card chart-card">
+        <div class="chart-head"><h2>资产结构</h2><span class="chart-desc">市值占比 · 点击切片筛选产品</span></div>
         <div class="dim-toggle" id="ring-dims">
           <button type="button" data-dim="category" class="active">按类别</button>
           <button type="button" data-dim="currency">按币种</button>
           <button type="button" data-dim="risk">按风险等级</button>
         </div>
         <div class="chart-box" id="ring-chart"></div>
-        <div class="hint" style="margin-top:6px;font-size:11px;color:var(--ink-3)">点击环图切片可筛选「产品」列表。</div>
       </div>
-      <div class="card">
-        <h2>市值排行 · 按产品</h2>
-        <div class="chart-box" id="bar-chart"></div>
-        <div class="hint" style="margin-top:6px;font-size:11px;color:var(--ink-3)">点击条形图可只看该产品，再次点击取消。</div>
+      <div class="card chart-card">
+        <div class="chart-head"><h2>盈亏构成</h2><span class="chart-desc">浮动 vs 已实现 · 盈 vs 亏</span></div>
+        <div class="chart-box" id="profit-chart"></div>
       </div>
-      <div class="card">
-        <h2>组合市值走势（估算）</h2>
+      <div class="card chart-card">
+        <div class="chart-head"><h2>组合市值走势</h2><span class="chart-desc">估算市值 vs 累计净投入</span></div>
         <div class="chart-box" id="trend-chart"></div>
       </div>
-      <div class="card">
-        <h2>盈亏构成</h2>
-        <div class="chart-box" id="profit-chart"></div>
+      <div class="card chart-card">
+        <div class="chart-head"><h2>市值排行</h2><span class="chart-desc">点击可只看该产品</span></div>
+        <div class="chart-box" id="bar-chart"></div>
       </div>
     </section>
   </section>

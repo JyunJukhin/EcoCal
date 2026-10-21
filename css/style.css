@@ -108,13 +108,49 @@ input,select,textarea{font-family:inherit;font-size:14px;color:var(--ink)}
   display:inline-flex;gap:8px;align-items:baseline;
 }
 .currency-chip b{color:var(--ink);font-feature-settings:"tnum"}
+.currency-chip b .pct{font-style:normal;font-weight:400;font-size:11px;color:var(--ink-3);margin-left:4px}
 .currency-chip .loss{color:var(--green)}
 .currency-chip .gain{color:var(--red)}
 
-/* ============ 图表区（统计页：单列大卡，保证可读性） ============ */
-.charts-grid{
-  display:grid;grid-template-columns:1fr;gap:18px;margin-bottom:18px;
+/* ============ 统计页：资产速览 ============ */
+/* Hero 大卡（渐变蓝底白字） */
+.stats-hero{
+  background:linear-gradient(135deg,#0a6cff 0%,#3f9bff 55%,#64baff 100%);
+  border-radius:24px;padding:26px 30px;color:#fff;
+  display:flex;justify-content:space-between;align-items:center;gap:20px;flex-wrap:wrap;
+  margin-bottom:16px;box-shadow:0 12px 30px rgba(0,108,255,.28);
 }
+.hero-main .hero-label{font-size:13px;opacity:.88}
+.hero-value{
+  font-size:44px;font-weight:700;letter-spacing:-.02em;line-height:1.12;
+  font-feature-settings:"tnum";margin:6px 0 4px;
+}
+.hero-delta{font-size:13px;opacity:.94;font-feature-settings:"tnum"}
+.hero-metrics{display:flex;gap:30px;flex-wrap:wrap}
+.hero-metrics .hm{text-align:right}
+.hero-metrics .hm .l{font-size:12px;opacity:.8}
+.hero-metrics .hm .v{font-size:19px;font-weight:650;font-feature-settings:"tnum";margin-top:3px}
+
+/* 指标磁贴 */
+.stats-tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:16px}
+@media (max-width:900px){.stats-tiles{grid-template-columns:repeat(2,1fr)}}
+.tile{
+  background:var(--card);border:1px solid var(--line);border-radius:16px;
+  padding:15px 18px;box-shadow:var(--shadow);
+}
+.tile .t-label{font-size:12px;color:var(--ink-2);margin-bottom:7px}
+.tile .t-value{font-size:22px;font-weight:650;font-feature-settings:"tnum"}
+.tile .t-sub{font-size:12px;color:var(--ink-3);margin-top:5px;font-feature-settings:"tnum"}
+
+/* ============ 图表区（统计页：2 列自适应大卡） ============ */
+.charts-grid{
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(520px,1fr));gap:16px;margin-bottom:18px;
+}
+@media (max-width:640px){.charts-grid{grid-template-columns:1fr}}
+.card.chart-card{padding:20px 22px}
+.chart-card .chart-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:12px;flex-wrap:wrap}
+.chart-card .chart-head h2{font-size:15px;font-weight:650;margin:0}
+.chart-card .chart-desc{font-size:12px;color:var(--ink-3)}
 
 /* ============ 主界面分页（产品 / 统计） ============ */
 .tabs{display:flex;gap:28px;border-bottom:1px solid var(--line);margin-bottom:18px}
