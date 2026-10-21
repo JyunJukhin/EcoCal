@@ -468,6 +468,16 @@ EcoCal.setChartFilter('category', 'stock');
 assert((elements['asset-list'].innerHTML || '').includes('招商银行') && !(elements['asset-list'].innerHTML || '').includes('沪深300'), '按类别=股票筛选生效');
 EcoCal.clearChartFilter();
 
+// 5.4 主界面分页：产品 / 统计（独立 Tab）
+EcoCal.switchTab('stats');
+assert(elements['panel-stats'].classList.contains('hidden') === false, '切到「统计」页签：统计面板显示');
+assert(elements['panel-assets'].classList.contains('hidden') === true, '切到「统计」页签：产品面板隐藏');
+EcoCal.switchTab('assets');
+assert(elements['panel-assets'].classList.contains('hidden') === false, '切回「产品」页签：产品面板显示');
+assert(elements['panel-stats'].classList.contains('hidden') === true, '切回「产品」页签：统计面板隐藏');
+EcoCal.switchTab('unknown'); // 非法值回退到产品页
+assert(elements['panel-assets'].classList.contains('hidden') === false, '非法 Tab 值回退到产品页');
+
 /* ---- 汇总结果 ---- */
 console.log('\n结果：' + pass + ' 通过，' + fail + ' 失败');
 if (fail > 0) process.exit(1);

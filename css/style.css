@@ -118,6 +118,17 @@ input,select,textarea{font-family:inherit;font-size:14px;color:var(--ink)}
 @media (max-width:760px){.charts-grid{grid-template-columns:1fr}}
 @media (min-width:1200px){.charts-grid{grid-template-columns:1fr 1fr 1fr 1fr}}
 
+/* ============ 主界面分页（产品 / 统计） ============ */
+.tabs{display:flex;gap:28px;border-bottom:1px solid var(--line);margin-bottom:18px}
+.tab{
+  appearance:none;background:none;border:none;padding:8px 4px 12px;font-size:15px;color:var(--ink-2);
+  border-bottom:2px solid transparent;cursor:pointer;margin-bottom:-1px;
+}
+.tab:hover{color:var(--ink)}
+.tab.active{color:var(--ink);font-weight:650;border-bottom-color:#0071e3}
+.tab-panel{animation:panelFade .18s ease}
+@keyframes panelFade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+
 /* 环图维度切换（按类别 / 按币种 / 按风险等级） */
 .dim-toggle{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap}
 .dim-toggle button{

@@ -42,6 +42,8 @@
 
 发布新版本时同步更新：`js/app.js` 的 `APP_VERSION`、`manifest.json` 的 `version`、`sw.js` 的 `CACHE_NAME` 缓存版本。
 
+> 版本规范：平时功能迭代**不提升版本号**（频繁提交、累积功能），仅在发布新版本时统一提升为「主版本.次版本.补丁」并同步 manifest / sw 缓存版本。
+
 ## 快速开始
 
 | 方式 | 操作 |

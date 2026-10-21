@@ -708,6 +708,17 @@ let expanded = new Set();      // 展开卡片集合
 // 筛选条件：category/currency（下拉） + risk/fxFlag/assetId（图表点击筛选）
 let filters = { category: 'all', currency: 'all', risk: null, fxFlag: null, assetId: null, sort: 'valueDesc' };
 let ringDim = 'category';      // 资产结构环图维度：category / currency / risk
+let activeTab = 'assets';      // 主界面分页：assets（产品）/ stats（统计）
+
+/* ---- 主界面分页切换：产品 / 统计 ---- */
+function switchTab(name) {
+  activeTab = (name === 'stats') ? 'stats' : 'assets';
+  document.querySelectorAll('#main-tabs .tab').forEach(b => b.classList.toggle('active', b.dataset.tab === activeTab));
+  const assetsPanel = $id('panel-assets');
+  const statsPanel = $id('panel-stats');
+  if (assetsPanel) assetsPanel.classList.toggle('hidden', activeTab !== 'assets');
+  if (statsPanel) statsPanel.classList.toggle('hidden', activeTab !== 'stats');
+}
 
 function getAsset(id) { return state.assets.find(a => a.id === id); }
 
@@ -897,6 +908,7 @@ function bindChartInteractions() {
     const path = e.target && e.target.closest ? e.target.closest('path[data-dim-key]') : null;
     if (!path) return;
     setChartFilter(ringDim, path.dataset.dimKey);
+    switchTab('assets'); // 跳转到产品列表查看筛选结果
   };
   const barEl = $id('bar-chart');
   barEl.onclick = (e) => {
@@ -906,6 +918,7 @@ function bindChartInteractions() {
     filters.assetId = (filters.assetId === id) ? null : id; // 再次点击取消
     syncChartFilterBar();
     renderList();
+    switchTab('assets');
   };
   // 环图维度切换按钮（index.html 内静态按钮）
   document.querySelectorAll('#ring-dims button').forEach(btn => {
@@ -2044,6 +2057,11 @@ function bindEvents() {
   $id('btn-add').onclick = () => openAssetForm(null);
   $id('empty-add').onclick = () => openAssetForm(null);
 
+  // 主界面分页：产品 / 统计
+  document.querySelectorAll('#main-tabs .tab').forEach(btn => {
+    btn.onclick = () => switchTab(btn.dataset.tab);
+  });
+
   // 列表事件委托
   $id('asset-list').addEventListener('click', (e) => {
     const btn = e.target.closest('button[data-action]');
@@ -2285,6 +2303,10 @@ function init() {
     seedDemo();
   }
   renderAll();
+  // 直链支持：`?tab=stats` 直接打开「统计」页（便于分享/快速查看）
+  if (typeof location !== 'undefined' && location.search.indexOf('tab=stats') > -1) {
+    switchTab('stats');
+  }
 
   // PWA：注册 Service Worker（仅在 http(s) 环境生效，file:// 双击打开时自动跳过）
   // 效果：把页面"添加到主屏幕"后，可全屏启动并离线使用
@@ -2318,7 +2340,7 @@ window.__EcoCal = {
   openSettings, openAssetForm, openTradeForm, openHelp,
   submitTrade, submitAsset,
   renderAll, renderList,
-  ringDataByDim, setChartFilter, clearChartFilter,
+  ringDataByDim, setChartFilter, clearChartFilter, switchTab,
   openExportModal, openImportModal, importPayloadText, buildExportPayload,
   migrateToTrades, migrateToV6, fxRateFromCache, daysAgoStr,
   normalizeSymbol, symbolToCurrency, fetchQuote, fetchKline, fetchStockInfo,
