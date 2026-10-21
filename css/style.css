@@ -111,12 +111,10 @@ input,select,textarea{font-family:inherit;font-size:14px;color:var(--ink)}
 .currency-chip .loss{color:var(--green)}
 .currency-chip .gain{color:var(--red)}
 
-/* ============ 图表区 ============ */
+/* ============ 图表区（统计页：单列大卡，保证可读性） ============ */
 .charts-grid{
-  display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:18px;
+  display:grid;grid-template-columns:1fr;gap:18px;margin-bottom:18px;
 }
-@media (max-width:760px){.charts-grid{grid-template-columns:1fr}}
-@media (min-width:1200px){.charts-grid{grid-template-columns:1fr 1fr 1fr 1fr}}
 
 /* ============ 主界面分页（产品 / 统计） ============ */
 .tabs{display:flex;gap:28px;border-bottom:1px solid var(--line);margin-bottom:18px}
@@ -139,15 +137,15 @@ input,select,textarea{font-family:inherit;font-size:14px;color:var(--ink)}
 .card{
   background:var(--card);border-radius:var(--radius);
   border:1px solid var(--line);box-shadow:var(--shadow);
-  padding:20px;
+  padding:22px;
 }
 .card h2{font-size:16px;font-weight:600;margin-bottom:14px;letter-spacing:-.01em}
-.chart-box{width:100%;min-height:220px;display:flex;align-items:center;justify-content:center}
+.chart-box{width:100%;min-height:280px;display:flex;align-items:center;justify-content:center}
 .chart-box svg{width:100%;height:auto}
-.chart-empty{color:var(--ink-3);font-size:13px;text-align:center}
-.chart-legend{display:flex;flex-wrap:wrap;gap:8px 14px;margin-top:12px;justify-content:center}
-.chart-legend span{font-size:12px;color:var(--ink-2);display:inline-flex;gap:6px;align-items:center}
-.chart-legend i{width:10px;height:10px;border-radius:3px;display:inline-block}
+.chart-empty{color:var(--ink-3);font-size:14px;text-align:center}
+.chart-legend{display:flex;flex-wrap:wrap;gap:8px 16px;margin-top:14px;justify-content:center}
+.chart-legend span{font-size:13px;color:var(--ink-2);display:inline-flex;gap:6px;align-items:center}
+.chart-legend i{width:11px;height:11px;border-radius:3px;display:inline-block}
 
 /* ============ 筛选栏 ============ */
 .filter-bar{

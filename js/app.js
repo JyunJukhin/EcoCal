@@ -597,14 +597,14 @@ const Charts = {
       const barColor = it.loss ? 'rgba(29,158,73,.75)' : 'rgba(0,113,227,.78)';
       // data-bar-id 供「点击条形图筛选该产品」使用
       return '<div' + (it.assetId ? ' data-bar-id="' + esc(it.assetId) + '"' : '') +
-        ' style="cursor:pointer;display:grid;grid-template-columns:110px 1fr 110px;gap:10px;align-items:center;padding:5px 0;font-size:12px">' +
+        ' style="cursor:pointer;display:grid;grid-template-columns:170px 1fr 150px;gap:12px;align-items:center;padding:8px 0;font-size:13px">' +
         '<div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink-2)" title="' + esc(it.label) + '">' + esc(it.label) + '</div>' +
-        '<div style="position:relative;height:16px;background:rgba(0,0,0,.05);border-radius:8px">' +
-          '<div style="position:absolute;left:0;top:0;bottom:0;width:' + pct + '%;background:' + barColor + ';border-radius:8px;transition:width .3s"></div>' +
+        '<div style="position:relative;height:18px;background:rgba(0,0,0,.05);border-radius:9px">' +
+          '<div style="position:absolute;left:0;top:0;bottom:0;width:' + pct + '%;background:' + barColor + ';border-radius:9px;transition:width .3s"></div>' +
         '</div>' +
         '<div style="text-align:right;font-feature-settings:tnum;font-weight:600">' + fmtMoney(it.value, baseCurrency) +
-          (it.loss ? '<span style="color:var(--green);font-size:11px;font-weight:400"> ' + it.sub + '</span>'
-                   : '<span style="color:var(--ink-3);font-size:11px;font-weight:400"> ' + it.sub + '</span>') +
+          (it.loss ? '<span style="color:var(--green);font-size:12px;font-weight:400"> ' + it.sub + '</span>'
+                   : '<span style="color:var(--ink-3);font-size:12px;font-weight:400"> ' + it.sub + '</span>') +
         '</div></div>';
     }).join('');
     return '<div style="width:100%">' + rows + '</div>';
@@ -612,7 +612,7 @@ const Charts = {
   /* 折线走势图：points = [{date, value}]，>=2 点才画 */
   line(points, w, h) {
     if (points.length < 2) return '<div class="chart-empty">价值记录不足 2 条，暂无法绘制走势（可继续添加价值记录）</div>';
-    const W = w || 320, H = h || 140, pad = { l: 30, r: 6, t: 8, b: 20 };
+    const W = w || 560, H = h || 200, pad = { l: 34, r: 8, t: 12, b: 22 };
     const values = points.map(p => p.value);
     let min = Math.min.apply(null, values), max = Math.max.apply(null, values);
     if (min === max) { min -= 1; max += 1; }
@@ -640,7 +640,7 @@ const Charts = {
     }
     const last = points[points.length - 1];
     const dates = points.map(p => p.date);
-    return '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;max-height:180px">' + ticks +
+    return '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;max-height:260px">' + ticks +
       '<path d="' + areaPath + '" fill="rgba(0,113,227,.10)" stroke="none"/>' +
       '<path d="' + linePath.trim() + '" fill="none" stroke="#0071e3" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>' +
       '<circle cx="' + x(points.length - 1).toFixed(1) + '" cy="' + y(last.value).toFixed(1) +
@@ -659,7 +659,7 @@ const Charts = {
     if (!Array.isArray(points) || points.length < 2) {
       return '<div class="chart-empty">交易数据不足 2 个时间点，暂无法绘制组合走势</div>';
     }
-    const W = w || 360, H = h || 150, pad = { l: 34, r: 8, t: 12, b: 20 };
+    const W = w || 560, H = h || 210, pad = { l: 38, r: 8, t: 14, b: 22 };
     let min = Infinity, max = -Infinity;
     points.forEach(p => {
       [p.value, p.net].forEach(v => { if (isFinite(v)) { min = Math.min(min, v); max = Math.max(max, v); } });
@@ -688,7 +688,7 @@ const Charts = {
     };
     const last = points[points.length - 1];
     const first = points[0];
-    return '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;max-height:180px">' + ticks +
+    return '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;max-height:280px">' + ticks +
       polyline('value', '#0071e3', false) +
       polyline('net', '#8e8e93', true) +
       '<circle cx="' + xAt(points.length - 1).toFixed(1) + '" cy="' + yAt(last.value).toFixed(1) + '" r="3" fill="#0071e3"/>' +
@@ -806,7 +806,7 @@ function profitChartHTML(s) {
   const stack = (items) => {
     const totalAbs = items.reduce((sum, it) => sum + Math.abs(it.value), 0);
     if (totalAbs <= 0) return '<div class="chart-empty" style="padding:6px 0">暂无盈亏数据</div>';
-    return '<div style="display:flex;height:14px;border-radius:7px;overflow:hidden;background:rgba(0,0,0,.05)">' +
+    return '<div style="display:flex;height:16px;border-radius:8px;overflow:hidden;background:rgba(0,0,0,.05)">' +
       items.filter(it => it.value !== 0).map(it => {
         const w = Math.abs(it.value) / totalAbs * 100;
         const color = it.value > 0 ? '#d70015' : '#1d9e49';
@@ -821,8 +821,8 @@ function profitChartHTML(s) {
         fmtSignedMoney(it.value, base) +
         ' <em style="font-style:normal;color:var(--ink-3);font-weight:400">(' +
         Math.round(Math.abs(it.value) / totalAbs * 100) + '%)</em></span>').join(' · ');
-    return '<div style="margin-bottom:12px">' +
-      '<div style="display:flex;justify-content:space-between;gap:10px;font-size:12px;color:var(--ink-2);margin-bottom:5px;flex-wrap:wrap">' +
+    return '<div style="margin-bottom:14px">' +
+      '<div style="display:flex;justify-content:space-between;gap:12px;font-size:13px;color:var(--ink-2);margin-bottom:6px;flex-wrap:wrap">' +
         '<span>' + esc(label) + '</span><span style="display:flex;gap:8px;flex-wrap:wrap">' + parts + '</span>' +
       '</div>' + stack(items) + '</div>';
   };
@@ -834,7 +834,7 @@ function profitChartHTML(s) {
     { label: '盈利产品合计', value: gainSum },
     { label: '亏损产品合计', value: lossSum },
   ]) +
-  '<div class="hint" style="font-size:11px;color:var(--ink-3)">浮动盈亏随当前市值/汇率变动；已实现盈亏为已落袋的卖出收益；两者相加即总盈亏。红=盈利（正），绿=亏损（负）。</div>';
+  '<div class="hint" style="font-size:12px;color:var(--ink-3)">浮动盈亏随当前市值/汇率变动；已实现盈亏为已落袋的卖出收益；两者相加即总盈亏。红=盈利（正），绿=亏损（负）。</div>';
 }
 
 function renderCharts() {
@@ -842,7 +842,7 @@ function renderCharts() {
   const base = state.settings.baseCurrency;
 
   // 环图（维度可切换：类别 / 币种 / 风险等级）
-  $id('ring-chart').innerHTML = Charts.ring(ringDataByDim(ringDim), 190);
+  $id('ring-chart').innerHTML = Charts.ring(ringDataByDim(ringDim), 260);
 
   // 条形图：各产品市值（基准币种，可点击筛选该产品）
   const barItems = s.metrics.map(m => {
@@ -1099,7 +1099,7 @@ function quoteChartHTML(asset) {
   if (k && Array.isArray(k.days) && k.days.length >= 2) {
     const points = k.days.map(d => ({ date: String(d[0]), value: Number(d[2]) }));
     return '<div class="tl-head"><span>近期走势（收盘价）</span><span>' + esc(asset.symbol) + '</span></div>' +
-      Charts.line(points, 360, 150) +
+      Charts.line(points, 560, 200) +
       '<div style="margin-top:8px"><button data-action="refreshQuote" class="btn btn-mini ghost">⟳ 刷新走势</button>' +
       (k.time ? '<span class="hint" style="margin-left:8px">更新于 ' + new Date(k.time).toLocaleDateString('zh-CN') + '</span>' : '') + '</div>';
   }
