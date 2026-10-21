@@ -1,7 +1,7 @@
 {
   "name": "EcoCal 资产持仓记录",
   "short_name": "EcoCal",
-  "version": "5.1.0",
+  "version": "6.0.0",
   "description": "本地个人理财持仓记录工具：记录买入成本与实时市值，自动计算收益率与年化，支持多币种汇总与可视化。数据仅保存在本机浏览器，离线可用。",
   "lang": "zh-CN",
   "start_url": "./index.html",

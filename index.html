@@ -20,20 +20,11 @@
       <button id="btn-help" class="btn btn-ghost">帮助</button>
       <button id="btn-import" class="btn btn-ghost">导入</button>
       <button id="btn-export" class="btn btn-ghost">导出</button>
-      <button id="btn-settings" class="btn btn-ghost">汇率设置</button>
-      <button id="btn-clear" class="btn btn-danger">清空数据</button>
-      <button id="btn-add-stock" class="btn btn-primary">＋ 股票</button>
-      <button id="btn-add-asset" class="btn btn-ghost">＋ 其他产品</button>
+      <button id="btn-settings" class="btn btn-ghost">设置</button>
+      <button id="btn-add" class="btn btn-primary">＋ 添加产品</button>
     </div>
   </div>
 </header>
-
-<div id="demo-banner" class="demo-banner hidden">
-  <div class="demo-banner-inner">
-    <span>👋 当前展示的是一组<b>演示数据</b>，方便你预览效果。记录你自己的资产前，可先点击右上角「清空数据」。</span>
-    <button class="close" id="demo-close" title="关闭">✕</button>
-  </div>
-</div>
 
 <main class="container">
   <!-- 汇总区 -->
@@ -69,10 +60,9 @@
   <section class="empty-state hidden" id="empty-state">
     <div class="icon">📈</div>
     <h3>还没有任何持仓记录</h3>
-    <p>股票走「＋ 股票」监察表入口（只需填代码即可加入）；基金、债券、存款等走「＋ 其他产品」。持有过程中随时记录市值或买卖，工具自动计算收益率与年化。</p>
+    <p>点击「＋ 添加产品」记录你的第一笔资产（股票只需填代码即可加入监察表；基金、债券、存款、外币等填写基本信息）。所有买卖通过卡片上的「＋ 买入 / − 卖出」逐笔记录，工具自动计算收益率与年化。数据仅保存在本机浏览器中。</p>
     <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
-      <button id="empty-add-stock" class="btn btn-primary">＋ 股票（监察表）</button>
-      <button id="empty-add-other" class="btn btn-ghost">＋ 添加其他产品</button>
+      <button id="empty-add" class="btn btn-primary">＋ 添加产品</button>
     </div>
   </section>
 </main>

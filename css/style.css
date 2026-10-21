@@ -254,7 +254,16 @@ input,select,textarea{font-family:inherit;font-size:14px;color:var(--ink)}
 }
 .badge-sell.sellable{background:rgba(29,158,73,.14);color:var(--green)}
 .badge-sell.locked{background:rgba(255,159,10,.14);color:#b25000}
+.badge-sell.partial{background:rgba(255,159,10,.14);color:#b25000}
 .tag.risk{font-weight:600}
+
+/* 交易录入方式选择（份数×单价 / 总金额） */
+.input-mode{
+  display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--ink-2);
+  border:1px solid var(--line);border-radius:980px;padding:6px 14px;cursor:pointer;background:#fff;
+}
+.input-mode:has(input:checked){border-color:#0071e3;color:#0071e3;background:rgba(0,113,227,.06);font-weight:600}
+.input-mode input{accent-color:#0071e3}
 
 /* ============ 帮助内容 ============ */
 .help-content{max-height:62vh;overflow-y:auto;padding-right:6px}
