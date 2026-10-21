@@ -116,6 +116,15 @@ input,select,textarea{font-family:inherit;font-size:14px;color:var(--ink)}
   display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:18px;
 }
 @media (max-width:760px){.charts-grid{grid-template-columns:1fr}}
+@media (min-width:1200px){.charts-grid{grid-template-columns:1fr 1fr 1fr 1fr}}
+
+/* 环图维度切换（按类别 / 按币种 / 按风险等级） */
+.dim-toggle{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap}
+.dim-toggle button{
+  font-size:12px;color:var(--ink-2);border:1px solid var(--line);background:#fff;
+  border-radius:980px;padding:4px 12px;cursor:pointer;
+}
+.dim-toggle button.active{background:rgba(0,113,227,.08);border-color:#0071e3;color:#0071e3;font-weight:600}
 .card{
   background:var(--card);border-radius:var(--radius);
   border:1px solid var(--line);box-shadow:var(--shadow);

@@ -424,6 +424,50 @@ assert(listHtml.includes('折合 CNY：¥19,440.00'), '非基准币种卡片折�
 assert(ringHtml.includes('<svg') && barHtml.includes('%'), '图表渲染：环图与条形图有内容');
 assert(EcoCal.renderList() === undefined, 'renderList 可重复调用（展开/刷新无异常）');
 
+// 5.2 v6.1 统计增强：组合市值走势（纯函数）
+const trendAsset = { id: 'tr1', name: '股票', category: 'stock', subCategory: 'A股', currency: 'CNY',
+  principal: 0, quantity: null, startDate: null, note: '', lastPrice: 11 };
+const trendTrades = [
+  { id: 'tt1', assetId: 'tr1', type: 'buy', date: '2025-01-01', quantity: 100, price: 10, fee: 0, note: '' },
+  { id: 'tt2', assetId: 'tr1', type: 'sell', date: '2025-01-10', quantity: 20, price: 12, fee: 0, note: '' },
+];
+const trend = Calc.portfolioTrend([trendAsset], trendTrades, { baseCurrency: 'CNY', rates: {} }, '2025-01-15');
+assert(trend.length === 3 && trend[0].date === '2025-01-01' && trend[2].date === '2025-01-15', '走势时间点 = 交易日期 ∪ 今天（升序）');
+assert(approx(trend[0].value, 1000) && approx(trend[0].net, -1000), '首日：市值1000、净投入-1000');
+assert(approx(trend[1].value, 960) && approx(trend[1].net, -760), '卖出日：市值960（80×12）、净投入-760');
+assert(approx(trend[2].value, 880) && approx(trend[2].net, -760), '末点用最新现价11：市值880，盈利=880-760=120');
+// 多币种换算进基准币种
+const trendUsd = Calc.portfolioTrend(
+  [{ id: 'tr2', name: '美股', category: 'stock', subCategory: '美股', currency: 'USD', principal: 0, quantity: null, startDate: null, note: '', lastPrice: 12 }],
+  [{ id: 'tt3', assetId: 'tr2', type: 'buy', date: '2025-01-01', quantity: 100, price: 10, fee: 0, note: '' }],
+  { baseCurrency: 'CNY', rates: { USD: 7.2 } }, '2025-01-15');
+assert(approx(trendUsd[1].value, 1200 * 7.2), 'USD 市值按汇率换算为 CNY');
+
+// 5.3 v6.1 统计增强：环图维度汇总 + 盈亏构成卡片 + 图表点击筛选
+EcoCal.seedDemo();
+const ringByCat = EcoCal.ringDataByDim('category');
+assert(ringByCat.some(d => d.label === '基金') && ringByCat.some(d => d.label === '外币'), '环图·按类别：含基金与外币');
+const ringByCur = EcoCal.ringDataByDim('currency');
+assert(ringByCur.some(d => d.label === 'USD（外币）'), '环图·按币种：外币产品按其外币币种（USD（外币））');
+const ringByRisk = EcoCal.ringDataByDim('risk');
+assert(ringByRisk.some(d => d.label === 'R5') && ringByRisk.some(d => d.label === 'R1'), '环图·按风险等级：R1 与 R5 均存在');
+EcoCal.renderAll();
+assert((elements['trend-chart'].innerHTML || '').includes('组合市值'), '组合走势图渲染（含图例）');
+assert((elements['profit-chart'].innerHTML || '').includes('总盈亏构成'), '盈亏构成卡片渲染');
+assert((elements['bar-chart'].innerHTML || '').includes('data-bar-id='), '条形图行带可点击筛选标记');
+assert((elements['ring-chart'].innerHTML || '').includes('data-dim-key='), '环图切片带可点击筛选标记');
+// 点击筛选：按风险等级 R1 → 列表只含 R1 产品
+EcoCal.setChartFilter('risk', 'R1');
+const filteredListHtml = elements['asset-list'].innerHTML || '';
+assert(!filteredListHtml.includes('苹果（AAPL）') && filteredListHtml.includes('美元现汇'), '按风险 R1 筛选后列表不再含 R5 的苹果，仍含 R1 的美元现汇');
+assert(!elements['chart-filter-bar'].classList.contains('hidden'), '图表筛选状态条显示');
+EcoCal.clearChartFilter();
+assert(elements['chart-filter-bar'].classList.contains('hidden'), '清除图表筛选后状态条隐藏');
+// 按大类筛选（环图点击）
+EcoCal.setChartFilter('category', 'stock');
+assert((elements['asset-list'].innerHTML || '').includes('招商银行') && !(elements['asset-list'].innerHTML || '').includes('沪深300'), '按类别=股票筛选生效');
+EcoCal.clearChartFilter();
+
 /* ---- 汇总结果 ---- */
 console.log('\n结果：' + pass + ' 通过，' + fail + ' 失败');
 if (fail > 0) process.exit(1);

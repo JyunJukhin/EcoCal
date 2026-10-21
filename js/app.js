@@ -15,9 +15,9 @@ const STORAGE_KEY = 'ecocal.data.v1';
 
 /* 应用版本：主版本.次版本.补丁
  * - 主版本：重大架构/功能（v3 多文件、v4 股票交易与行情、v6 交易记录全模式）
- * - 次版本：功能增强（v5 监察表模式与优化）
+ * - 次版本：功能增强（v5 监察表模式与优化、v6.1 统计增强）
  * - 补丁：缺陷修复 */
-const APP_VERSION = '6.0.0';
+const APP_VERSION = '6.1.0';
 
 const CURRENCIES = {
   CNY: { symbol: '¥',  name: '人民币' },
@@ -336,6 +336,61 @@ const Calc = {
     };
   },
   /**
+   * 组合市值走势（估算）：返回 [{ date, value, net }] 快照序列，
+   * 时间点 = 全部交易日期 ∪ 今天（升序）。
+   * - value：各产品在该日的估算市值（基准币种）——数量按当日已发生买卖精确计算，
+   *   单价按「最近已知成交价」估算（最后一期用最新现价 lastPrice）
+   * - net：截至该日的累计净投入（买入+费为负、卖出回收为正，基准币种）
+   */
+  portfolioTrend(assets, trades, settings, today) {
+    const todayS = today || todayStr();
+    const dateSet = new Set();
+    const assetTrades = {};
+    assets.forEach(a => { assetTrades[a.id] = []; });
+    (trades || []).forEach(t => {
+      if (assetTrades[t.assetId]) { assetTrades[t.assetId].push(t); dateSet.add(t.date); }
+    });
+    dateSet.add(todayS);
+    const dates = Array.from(dateSet).sort();
+    if (!dates.length) return [];
+
+    const series = assets.map(a => {
+      const list = assetTrades[a.id].slice().sort((x, y) => x.date < y.date ? -1 : x.date > y.date ? 1 : 0);
+      const pts = [];
+      let qty = 0, lastPrice = null, net = 0, li = 0;
+      dates.forEach(d => {
+        while (li < list.length && list[li].date <= d) {
+          const t = list[li];
+          const q = Number(t.quantity) || 0;
+          const p = Number(t.price) || 0;
+          const fee = Number(t.fee) || 0;
+          if (t.type === 'buy') { qty += q; net -= (q * p + fee); lastPrice = p; }
+          else { qty -= q; net += (q * p - fee); lastPrice = p; }
+          li++;
+        }
+        pts.push({ date: d, qty, price: lastPrice, net });
+      });
+      return { asset: a, pts };
+    });
+
+    const lastIdx = dates.length - 1;
+    series.forEach(sr => {
+      // 最后一期统一用最新现价（更贴近真实市值）
+      if (sr.asset.lastPrice != null) sr.pts[lastIdx].price = Number(sr.asset.lastPrice);
+      sr.pts.forEach(pt => {
+        const val = (pt.qty > 0 && pt.price != null) ? pt.qty * pt.price : 0;
+        pt.value = Calc.toBase(val, sr.asset.currency, settings) || 0;
+        pt.net = Calc.toBase(pt.net, sr.asset.currency, settings) || 0;
+      });
+    });
+
+    return dates.map((d, i) => {
+      let value = 0, net = 0;
+      series.forEach(sr => { value += sr.pts[i].value; net += sr.pts[i].net; });
+      return { date: d, value: round2(value), net: round2(net) };
+    });
+  },
+  /**
    * 汇率换算：金额 → 基准币种。汇率未设置时返回 null。
    */
   toBase(amount, currency, settings) {
@@ -521,8 +576,10 @@ const Charts = {
       if (!(d.value > 0)) return;
       const angle = d.value / total * Math.PI * 2;
       const a1 = acc + angle;
+      // data-dim-key 供「点击环图切片筛选」使用
       paths += '<path d="' + arc(acc, a1) + '" fill="none" stroke="' + d.color +
-               '" stroke-width="' + sw + '" stroke-linecap="butt"/>';
+               '" stroke-width="' + sw + '" stroke-linecap="butt" data-dim-key="' + esc(d.key || d.label) + '"' +
+               ' title="' + esc(d.label) + '" style="cursor:pointer"/>';
       legend.push('<span><i style="background:' + d.color + '"></i>' + esc(d.label) +
                   ' · ' + (Math.round(d.value / total * 1000) / 10) + '%</span>');
       acc = a1;
@@ -538,7 +595,9 @@ const Charts = {
     const rows = items.map((it, idx) => {
       const pct = Math.max(2, Math.round(Math.abs(it.value) / max * 100));
       const barColor = it.loss ? 'rgba(29,158,73,.75)' : 'rgba(0,113,227,.78)';
-      return '<div style="display:grid;grid-template-columns:110px 1fr 110px;gap:10px;align-items:center;padding:5px 0;font-size:12px">' +
+      // data-bar-id 供「点击条形图筛选该产品」使用
+      return '<div' + (it.assetId ? ' data-bar-id="' + esc(it.assetId) + '"' : '') +
+        ' style="cursor:pointer;display:grid;grid-template-columns:110px 1fr 110px;gap:10px;align-items:center;padding:5px 0;font-size:12px">' +
         '<div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink-2)" title="' + esc(it.label) + '">' + esc(it.label) + '</div>' +
         '<div style="position:relative;height:16px;background:rgba(0,0,0,.05);border-radius:8px">' +
           '<div style="position:absolute;left:0;top:0;bottom:0;width:' + pct + '%;background:' + barColor + ';border-radius:8px;transition:width .3s"></div>' +
@@ -591,12 +650,64 @@ const Charts = {
       '<text x="' + pad.l + '" y="' + (H - 6) + '" font-size="9" fill="#a1a1a6">' + esc(dates[0]) + '</text>' +
       '<text x="' + (W - pad.r) + '" y="' + (H - 6) + '" text-anchor="end" font-size="9" fill="#a1a1a6">' + esc(last.date) + '</text>' +
       '</svg>';
+  },
+  /**
+   * 组合走势双线图：组合市值（估算，蓝实线）与累计净投入（灰虚线）。
+   * points: [{ date, value, net }]，至少 2 个时间点才绘制。
+   */
+  trend(points, w, h) {
+    if (!Array.isArray(points) || points.length < 2) {
+      return '<div class="chart-empty">交易数据不足 2 个时间点，暂无法绘制组合走势</div>';
+    }
+    const W = w || 360, H = h || 150, pad = { l: 34, r: 8, t: 12, b: 20 };
+    let min = Infinity, max = -Infinity;
+    points.forEach(p => {
+      [p.value, p.net].forEach(v => { if (isFinite(v)) { min = Math.min(min, v); max = Math.max(max, v); } });
+    });
+    if (!isFinite(min)) return '<div class="chart-empty">暂无数据</div>';
+    if (min === max) { min -= 1; max += 1; }
+    const range = max - min;
+    const spanW = W - pad.l - pad.r, spanH = H - pad.t - pad.b;
+    const xAt = i => pad.l + (points.length === 1 ? spanW / 2 : i / (points.length - 1) * spanW);
+    const yAt = v => pad.t + (1 - (v - min) / range) * spanH;
+    const fmtTick = v => (Math.abs(v) >= 10000 ? (v / 10000).toFixed(1) + '万' : Math.round(v));
+    let ticks = '';
+    for (let k = 0; k <= 2; k++) {
+      const v = min + range * k / 2;
+      const yy = pad.t + (1 - k / 2) * spanH;
+      ticks += '<line x1="' + pad.l + '" y1="' + yy.toFixed(1) + '" x2="' + (W - pad.r) + '" y2="' + yy.toFixed(1) + '" stroke="rgba(0,0,0,.06)" stroke-width="1"/>' +
+               '<text x="' + (pad.l - 5) + '" y="' + (yy + 3).toFixed(1) + '" text-anchor="end" font-size="9" fill="#a1a1a6">' + fmtTick(v) + '</text>';
+    }
+    const polyline = (key, stroke, dash) => {
+      let path = '';
+      points.forEach((p, i) => {
+        path += (i ? 'L' : 'M') + xAt(i).toFixed(1) + ' ' + yAt(p[key]).toFixed(1) + ' ';
+      });
+      return '<path d="' + path.trim() + '" fill="none" stroke="' + stroke + '" stroke-width="' + (dash ? 1.6 : 2) +
+             '" stroke-linejoin="round" stroke-linecap="round"' + (dash ? ' stroke-dasharray="5 4"' : '') + '/>';
+    };
+    const last = points[points.length - 1];
+    const first = points[0];
+    return '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;max-height:180px">' + ticks +
+      polyline('value', '#0071e3', false) +
+      polyline('net', '#8e8e93', true) +
+      '<circle cx="' + xAt(points.length - 1).toFixed(1) + '" cy="' + yAt(last.value).toFixed(1) + '" r="3" fill="#0071e3"/>' +
+      '<text x="' + xAt(0) + '" y="' + (H - 6) + '" font-size="9" fill="#a1a1a6">' + esc(first.date) + '</text>' +
+      '<text x="' + (W - pad.r) + '" y="' + (H - 6) + '" text-anchor="end" font-size="9" fill="#a1a1a6">' + esc(last.date) + '</text>' +
+      '</svg>' +
+      '<div class="chart-legend">' +
+        '<span><i style="background:#0071e3"></i>组合市值（估算）</span>' +
+        '<span><i style="background:#8e8e93"></i>累计净投入（负数为净流出）</span>' +
+      '</div>' +
+      '<div class="hint" style="margin-top:6px;font-size:11px;color:var(--ink-3)">市值按「最近已知成交价 / 最新现价」逐日估算；两条线之间的差距即各个时期的估算盈亏。</div>';
   }
 };
 
 /* ---------------- 状态 & 渲染 ---------------- */
 let expanded = new Set();      // 展开卡片集合
-let filters = { category: 'all', currency: 'all', sort: 'valueDesc' };
+// 筛选条件：category/currency（下拉） + risk/fxFlag/assetId（图表点击筛选）
+let filters = { category: 'all', currency: 'all', risk: null, fxFlag: null, assetId: null, sort: 'valueDesc' };
+let ringDim = 'category';      // 资产结构环图维度：category / currency / risk
 
 function getAsset(id) { return state.assets.find(a => a.id === id); }
 
@@ -648,28 +759,81 @@ function renderSummary() {
   $id('currency-subtotals').innerHTML = chips.join('') + missing;
 }
 
-/* ---- 图表区 ---- */
+/* ---- 图表区（v6.1：维度切换环图 + 组合走势 + 盈亏构成 + 点击筛选） ---- */
+/** 按维度汇总各产品的市值（基准币种）：category 按大类 / currency 按币种（外币产品按其外币） / risk 按风险等级 */
+function ringDataByDim(dim) {
+  const s = Calc.summary(state.assets, state.valuations, state.settings, state.trades);
+  const map = {};
+  s.metrics.forEach(m => {
+    const asset = state.assets.find(a => a.id === m.assetId);
+    if (!asset || m.baseValue == null) return;
+    let key;
+    if (dim === 'currency') {
+      key = asset.category === 'fx' ? (asset.foreignCurrency || '外币') + '（外币）' : asset.currency;
+    } else if (dim === 'risk') {
+      key = asset.riskLevel || '未设置';
+    } else {
+      key = CATEGORIES[asset.category] ? CATEGORIES[asset.category].label : (asset.category || '其他');
+    }
+    map[key] = (map[key] || 0) + m.baseValue;
+  });
+  return Object.keys(map).map((k, i) => ({
+    key: k, label: k, value: map[k], color: PALETTE[i % PALETTE.length],
+  }));
+}
+
+/** 盈亏构成卡片：总盈亏 = 浮动 + 已实现；产品盈利/亏损分布（双向比例条） */
+function profitChartHTML(s) {
+  if (!s.metrics.length) return '<div class="chart-empty">暂无数据</div>';
+  const base = state.settings.baseCurrency;
+  let gainSum = 0, lossSum = 0;
+  s.metrics.forEach(m => {
+    const total = m.baseTotal != null ? m.baseTotal : m.baseProfit;
+    if (total > 0.004) gainSum += total;
+    else if (total < -0.004) lossSum += total;
+  });
+  const stack = (items) => {
+    const totalAbs = items.reduce((sum, it) => sum + Math.abs(it.value), 0);
+    if (totalAbs <= 0) return '<div class="chart-empty" style="padding:6px 0">暂无盈亏数据</div>';
+    return '<div style="display:flex;height:14px;border-radius:7px;overflow:hidden;background:rgba(0,0,0,.05)">' +
+      items.filter(it => it.value !== 0).map(it => {
+        const w = Math.abs(it.value) / totalAbs * 100;
+        const color = it.value > 0 ? '#d70015' : '#1d9e49';
+        return '<div style="width:' + w.toFixed(1) + '%;background:' + color +
+               '" title="' + esc(it.label) + ' ' + fmtSignedMoney(it.value, base) + '"></div>';
+      }).join('') + '</div>';
+  };
+  const row = (label, items) => {
+    const totalAbs = items.reduce((sum, it) => sum + Math.abs(it.value), 0) || 1;
+    const parts = items.filter(it => it.value !== 0).map(it =>
+      '<span style="font-weight:600;color:' + (it.value > 0 ? 'var(--red)' : 'var(--green)') + '">' +
+        fmtSignedMoney(it.value, base) +
+        ' <em style="font-style:normal;color:var(--ink-3);font-weight:400">(' +
+        Math.round(Math.abs(it.value) / totalAbs * 100) + '%)</em></span>').join(' · ');
+    return '<div style="margin-bottom:12px">' +
+      '<div style="display:flex;justify-content:space-between;gap:10px;font-size:12px;color:var(--ink-2);margin-bottom:5px;flex-wrap:wrap">' +
+        '<span>' + esc(label) + '</span><span style="display:flex;gap:8px;flex-wrap:wrap">' + parts + '</span>' +
+      '</div>' + stack(items) + '</div>';
+  };
+  return row('总盈亏构成（浮动 vs 已实现）', [
+    { label: '浮动盈亏', value: s.totalFloat },
+    { label: '已实现盈亏', value: s.totalRealized },
+  ]) +
+  row('产品盈亏分布（' + s.gainCount + ' 盈 / ' + s.lossCount + ' 亏，按总盈亏口径）', [
+    { label: '盈利产品合计', value: gainSum },
+    { label: '亏损产品合计', value: lossSum },
+  ]) +
+  '<div class="hint" style="font-size:11px;color:var(--ink-3)">浮动盈亏随当前市值/汇率变动；已实现盈亏为已落袋的卖出收益；两者相加即总盈亏。红=盈利（正），绿=亏损（负）。</div>';
+}
+
 function renderCharts() {
   const s = Calc.summary(state.assets, state.valuations, state.settings, state.trades);
   const base = state.settings.baseCurrency;
 
-  // 环图：按大类汇总市值
-  const byCat = {};
-  s.metrics.forEach(m => {
-    const asset = state.assets.find(a => a.id === m.assetId);
-    if (!asset || m.baseValue == null) return;
-    const key = CATEGORIES[asset.category] ? CATEGORIES[asset.category].label : asset.category;
-    byCat[key] = (byCat[key] || 0) + m.baseValue;
-  });
-  const catKeys = Object.keys(byCat);
-  const ringData = catKeys.map((k, i) => ({
-    label: k,
-    value: byCat[k],
-    color: PALETTE[i % PALETTE.length],
-  }));
-  $id('ring-chart').innerHTML = Charts.ring(ringData, 190);
+  // 环图（维度可切换：类别 / 币种 / 风险等级）
+  $id('ring-chart').innerHTML = Charts.ring(ringDataByDim(ringDim), 190);
 
-  // 条形图：各产品市值（基准币种）
+  // 条形图：各产品市值（基准币种，可点击筛选该产品）
   const barItems = s.metrics.map(m => {
     const asset = state.assets.find(a => a.id === m.assetId);
     return {
@@ -677,10 +841,82 @@ function renderCharts() {
       value: m.baseValue || 0,
       loss: m.baseProfit != null && m.baseProfit < 0,
       sub: m.baseProfit != null ? '· ' + fmtPct(m.rate * 100) : '· 缺汇率',
-      currency: base,
+      assetId: m.assetId,
     };
   }).slice(0, 12);
   $id('bar-chart').innerHTML = Charts.bars(barItems, base);
+
+  // 组合市值走势（估算：市值 vs 累计净投入）
+  $id('trend-chart').innerHTML = Charts.trend(Calc.portfolioTrend(state.assets, state.trades, state.settings));
+
+  // 盈亏构成
+  $id('profit-chart').innerHTML = profitChartHTML(s);
+
+  // 图表交互：环图切片/条形 → 联动筛选产品列表；维度切换按钮
+  bindChartInteractions();
+}
+
+/* ---- 图表点击筛选 ---- */
+function setChartFilter(dim, key) {
+  clearChartFilter(false);
+  if (dim === 'category') filters.category = key;
+  else if (dim === 'currency') {
+    if (/（外币）$/.test(key)) { filters.fxFlag = key.replace(/（外币）$/, ''); filters.currency = 'all'; }
+    else filters.currency = key;
+  } else if (dim === 'risk') filters.risk = key;
+  syncChartFilterBar();
+  renderFilters();
+  renderList();
+}
+function clearChartFilter() {
+  filters.category = 'all'; filters.currency = 'all';
+  filters.risk = null; filters.fxFlag = null; filters.assetId = null;
+  syncChartFilterBar();
+  renderFilters();
+  renderList();
+}
+function syncChartFilterBar() {
+  const bar = $id('chart-filter-bar');
+  if (!bar) return;
+  const has = filters.category !== 'all' || filters.currency !== 'all' || filters.risk || filters.fxFlag || filters.assetId;
+  bar.classList.toggle('hidden', !has);
+  if (has) {
+    const parts = [];
+    if (filters.category !== 'all') parts.push('类别 ' + (CATEGORIES[filters.category] ? CATEGORIES[filters.category].label : filters.category));
+    if (filters.currency !== 'all') parts.push('币种 ' + filters.currency);
+    if (filters.risk) parts.push('风险 ' + filters.risk);
+    if (filters.fxFlag) parts.push('外币 ' + filters.fxFlag);
+    if (filters.assetId) { const a = getAsset(filters.assetId); parts.push('产品「' + (a ? a.name : '?') + '」'); }
+    $id('chart-filter-text').textContent = '当前筛选：' + parts.join(' · ');
+  }
+}
+
+function bindChartInteractions() {
+  const ringEl = $id('ring-chart');
+  ringEl.onclick = (e) => {
+    const path = e.target && e.target.closest ? e.target.closest('path[data-dim-key]') : null;
+    if (!path) return;
+    setChartFilter(ringDim, path.dataset.dimKey);
+  };
+  const barEl = $id('bar-chart');
+  barEl.onclick = (e) => {
+    const row = e.target && e.target.closest ? e.target.closest('[data-bar-id]') : null;
+    if (!row) return;
+    const id = row.dataset.barId;
+    filters.assetId = (filters.assetId === id) ? null : id; // 再次点击取消
+    syncChartFilterBar();
+    renderList();
+  };
+  // 环图维度切换按钮（index.html 内静态按钮）
+  document.querySelectorAll('#ring-dims button').forEach(btn => {
+    btn.onclick = () => {
+      ringDim = btn.dataset.dim;
+      document.querySelectorAll('#ring-dims button').forEach(b => b.classList.toggle('active', b === btn));
+      renderCharts();
+    };
+  });
+  const clearBtn = $id('chart-filter-clear');
+  if (clearBtn) clearBtn.onclick = clearChartFilter;
 }
 
 /* ---- 产品列表 ---- */
@@ -688,6 +924,11 @@ function filteredAssets() {
   let list = state.assets.slice();
   if (filters.category !== 'all') list = list.filter(a => a.category === filters.category);
   if (filters.currency !== 'all') list = list.filter(a => a.currency === filters.currency);
+  // 图表点击筛选（v6.1）：风险等级 / 外币币种 / 单个产品
+  if (filters.assetId) list = list.filter(a => a.id === filters.assetId);
+  if (filters.risk === '未设置') list = list.filter(a => !a.riskLevel);
+  else if (filters.risk) list = list.filter(a => a.riskLevel === filters.risk);
+  if (filters.fxFlag) list = list.filter(a => a.category === 'fx' && a.foreignCurrency === filters.fxFlag);
   // 排序指标：统一按交易记录口径计算（v6）
   const metricsOf = a => {
     const pos = Calc.tradePosition(a, state.trades, a.lastPrice != null ? Number(a.lastPrice) : null);
@@ -881,6 +1122,7 @@ function renderFilters() {
   const sortSel = $id('filter-sort');
   sortSel.innerHTML = SORT_OPTIONS.map(o => '<option value="' + o[0] + '">' + o[1] + '</option>').join('');
   sortSel.value = filters.sort;
+  syncChartFilterBar(); // 图表点击筛选的状态条（与下拉筛选联动显示）
 }
 
 function renderAll() {
@@ -1961,7 +2203,7 @@ const HELP_HTML = ''
   + '<li><b>记录买卖</b>：卡片上点「＋ 买入 / − 卖出」逐笔记账。每笔支持两种录入方式：<b>份数×单价</b>（金额自动算，股票默认）或<b>总金额</b>（份额自动折算，基金等默认）。卖出时系统自动校验不超持仓。</li>'
   + '<li><b>维护当前市值</b>：股票点「✎ 现价」填当前股价（或「⟳ 刷新行情」联网获取）；基金/存款/外币等点「✎ 市值」直接填<b>当前持仓总金额</b>，系统自动折算单位价值。</li>'
   + '<li><b>查看指标</b>：每张卡片显示持仓金额/数量、累计投入、浮动盈亏、已实现盈亏、总盈亏与年化（近似）；展开「查看记录」可见逐笔明细与（股票）近期走势。</li>'
-  + '<li><b>统计与图表</b>：顶部汇总区按基准币种显示总市值 / 总盈亏 / 整体年化，图表区有资产结构环图与市值排行；可用筛选与排序（市值 / 年化 / 收益率 / 持有天数）。</li>'
+  + '<li><b>统计与图表</b>：顶部汇总区按基准币种显示总市值 / 总盈亏 / 整体年化；图表区含资产结构环图（可切换按类别/币种/风险等级）、市值排行、<b>组合市值走势</b>（市值 vs 累计净投入）与<b>盈亏构成</b>。点击环图切片或条形图还可联动筛选下方产品列表（「✕ 清除图表筛选」恢复）；另可用下拉筛选与排序（市值 / 年化 / 收益率 / 持有天数）。</li>'
   + '<li><b>多币种与汇率</b>：在「设置」中维护汇率（可联网获取或手动填写），跨币种统计统一换算为基准币种；缺汇率的币种不计入总额并会提醒。</li>'
   + '<li><b>数据保存</b>：所有数据保存在浏览器本地（localStorage），无需联网即可用；建议定期「导出」备份（下载或复制 JSON），换设备/清缓存前务必先导出。</li>'
   + '</ol></section>'
@@ -2076,6 +2318,7 @@ window.__EcoCal = {
   openSettings, openAssetForm, openTradeForm, openHelp,
   submitTrade, submitAsset,
   renderAll, renderList,
+  ringDataByDim, setChartFilter, clearChartFilter,
   openExportModal, openImportModal, importPayloadText, buildExportPayload,
   migrateToTrades, migrateToV6, fxRateFromCache, daysAgoStr,
   normalizeSymbol, symbolToCurrency, fetchQuote, fetchKline, fetchStockInfo,

@@ -34,12 +34,27 @@
   <!-- 图表区 -->
   <section class="charts-grid">
     <div class="card">
-      <h2>资产结构 · 按类别（基准币种）</h2>
+      <h2>资产结构（基准币种）</h2>
+      <div class="dim-toggle" id="ring-dims">
+        <button type="button" data-dim="category" class="active">按类别</button>
+        <button type="button" data-dim="currency">按币种</button>
+        <button type="button" data-dim="risk">按风险等级</button>
+      </div>
       <div class="chart-box" id="ring-chart"></div>
+      <div class="hint" style="margin-top:6px;font-size:11px;color:var(--ink-3)">点击环图切片可筛选下方列表。</div>
     </div>
     <div class="card">
       <h2>市值排行 · 按产品</h2>
       <div class="chart-box" id="bar-chart"></div>
+      <div class="hint" style="margin-top:6px;font-size:11px;color:var(--ink-3)">点击条形图可只看该产品，再次点击取消。</div>
+    </div>
+    <div class="card">
+      <h2>组合市值走势（估算）</h2>
+      <div class="chart-box" id="trend-chart"></div>
+    </div>
+    <div class="card">
+      <h2>盈亏构成</h2>
+      <div class="chart-box" id="profit-chart"></div>
     </div>
   </section>
 
@@ -51,6 +66,12 @@
     <span class="sep"></span>
     <span class="filter-label">排序：</span>
     <select id="filter-sort" title="排序方式"></select>
+  </section>
+
+  <!-- 图表点击筛选状态条 -->
+  <section class="filter-bar hidden" id="chart-filter-bar">
+    <span class="filter-label" id="chart-filter-text"></span>
+    <button id="chart-filter-clear" class="btn btn-mini ghost">✕ 清除图表筛选</button>
   </section>
 
   <!-- 产品列表 -->
