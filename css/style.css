@@ -152,8 +152,97 @@ input,select,textarea{font-family:inherit;font-size:14px;color:var(--ink)}
 .chart-card .chart-head h2{font-size:15px;font-weight:650;margin:0}
 .chart-card .chart-desc{font-size:12px;color:var(--ink-3)}
 
+/* 盈亏构成：双迷你环图（以图为主） */
+.profit-donuts{display:flex;gap:20px;flex-wrap:wrap;justify-content:center;width:100%;padding:6px 0}
+.profit-donuts .donut{flex:1;min-width:240px;text-align:center}
+.profit-donuts .donut-title{font-size:13px;font-weight:600;color:var(--ink-2);margin-bottom:2px}
+
+/* ============ v6.3 统计页重构 ============ */
+.stats-sec{font-size:13px;font-weight:650;color:var(--ink-2);margin:22px 0 10px;letter-spacing:.01em}
+
+/* 核心仪表盘卡片 */
+.dash-cards{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+@media (max-width:900px){.dash-cards{grid-template-columns:repeat(2,1fr)}}
+.dash-card{
+  background:var(--card);border:1px solid var(--line);border-radius:18px;
+  padding:16px 18px;box-shadow:var(--shadow);
+}
+.dash-card.big{background:linear-gradient(135deg,#0a6cff 0%,#3f9bff 60%,#64baff 100%);border:none;color:#fff}
+.dash-card.big .dash-label{color:rgba(255,255,255,.85)}
+.dash-card.big .dash-sub{color:rgba(255,255,255,.82)}
+.dash-card.big .dash-value{margin:8px 0 4px}
+.dash-card .dash-label{font-size:12px;color:var(--ink-2)}
+.dash-card .dash-value{font-size:24px;font-weight:700;font-feature-settings:"tnum";margin:8px 0 4px;letter-spacing:-.01em}
+.dash-card .dash-sub{font-size:11px;color:var(--ink-3);line-height:1.5;font-feature-settings:"tnum"}
+.dash-card.dash-wide{grid-column:1/-1}
+.dash-pair{display:flex;gap:24px;flex-wrap:wrap;margin:10px 0 10px}
+.dash-pair-item{display:flex;flex-direction:column;gap:2px}
+.dash-pair-item b{font-size:20px;font-weight:650;font-feature-settings:"tnum"}
+.dash-pair-item span{font-size:12px;color:var(--ink-2)}
+.dash-bar{height:10px;border-radius:5px;background:rgba(215,0,21,.22);overflow:hidden}
+.dash-bar .dash-bar-cash{height:100%;background:linear-gradient(90deg,#1d9e49,#34c759);border-radius:5px}
+.dash-note{font-size:11px;color:var(--ink-3);margin-top:8px}
+
+/* 配置与结构 */
+.struct-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media (max-width:900px){.struct-grid{grid-template-columns:1fr}}
+.struct-grid .struct-wide{grid-column:1/-1}
+.dist-list{display:flex;flex-direction:column;gap:10px}
+.dist-row{display:grid;grid-template-columns:96px 1fr 128px;gap:12px;align-items:center}
+@media (max-width:640px){.dist-row{grid-template-columns:80px 1fr 104px}}
+.dist-label{font-size:13px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dist-track{height:18px;border-radius:9px;background:rgba(0,0,0,.05);overflow:hidden}
+.dist-track div{height:100%;border-radius:9px;transition:width .3s}
+.dist-value{text-align:right;font-feature-settings:"tnum";font-size:13px;font-weight:600;white-space:nowrap}
+.dist-value em{display:block;font-style:normal;font-weight:400;font-size:11px;color:var(--ink-3)}
+
+/* 集中度 */
+.conc-cards{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:12px}
+@media (max-width:900px){.conc-cards{grid-template-columns:1fr}}
+.conc-card{background:#f5f5f7;border-radius:14px;padding:14px 16px}
+.conc-card .conc-label{font-size:12px;color:var(--ink-2);margin-bottom:6px}
+.conc-card .conc-value{font-size:26px;font-weight:700;font-feature-settings:"tnum";color:var(--ink)}
+.conc-card .conc-sub{font-size:11px;color:var(--ink-3);margin-top:6px;line-height:1.5}
+.conc-warn{
+  background:rgba(255,159,10,.1);border:1px solid rgba(255,159,10,.4);border-radius:14px;
+  padding:12px 16px;font-size:13px;color:#b25000;line-height:1.7;
+}
+.conc-warn-item{margin-top:4px}
+.conc-ok{
+  background:rgba(29,158,73,.08);border:1px solid rgba(29,158,73,.25);border-radius:14px;
+  padding:12px 16px;font-size:13px;color:var(--green);
+}
+
+/* 持仓明细表 */
+.table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:14px}
+.detail-table{border-collapse:collapse;width:100%;min-width:1080px;font-size:12.5px}
+.detail-table th{
+  background:#f5f5f7;color:var(--ink-2);font-weight:600;text-align:right;
+  padding:10px 12px;border-bottom:1px solid var(--line);white-space:nowrap;
+}
+.detail-table th:first-child,.detail-table td:first-child{text-align:left}
+.detail-table td{
+  padding:9px 12px;border-bottom:1px solid rgba(0,0,0,.05);
+  color:var(--ink);white-space:nowrap;text-align:right;
+}
+.detail-table tr:last-child td{border-bottom:none}
+.detail-table tbody tr:hover{background:rgba(0,113,227,.04)}
+.detail-table .td-name{font-weight:600}
+.detail-table .tnum{font-feature-settings:"tnum"}
+
+/* 组合走势：指标条 */
+.trend-stats{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+.trend-stats .ts{flex:1;min-width:120px;background:#f5f5f7;border-radius:12px;padding:8px 12px}
+.trend-stats .ts span{display:block;font-size:11px;color:var(--ink-3);margin-bottom:3px}
+.trend-stats .ts b{font-size:15px;color:var(--ink);font-weight:650;font-feature-settings:"tnum"}
+
 /* ============ 主界面分页（产品 / 统计） ============ */
-.tabs{display:flex;gap:28px;border-bottom:1px solid var(--line);margin-bottom:18px}
+/* 顶部固定：Tab 栏吸附在顶栏下方（顶部高度由 JS 测量写入 --topbar-h / --tabs-h） */
+.tabs{
+  position:sticky;top:var(--topbar-h, 58px);z-index:30;
+  background:var(--bg);
+  display:flex;gap:28px;border-bottom:1px solid var(--line);margin-bottom:0;
+}
 .tab{
   appearance:none;background:none;border:none;padding:8px 4px 12px;font-size:15px;color:var(--ink-2);
   border-bottom:2px solid transparent;cursor:pointer;margin-bottom:-1px;
@@ -183,11 +272,12 @@ input,select,textarea{font-family:inherit;font-size:14px;color:var(--ink)}
 .chart-legend span{font-size:13px;color:var(--ink-2);display:inline-flex;gap:6px;align-items:center}
 .chart-legend i{width:11px;height:11px;border-radius:3px;display:inline-block}
 
-/* ============ 筛选栏 ============ */
+/* ============ 筛选栏（吸附在 Tab 栏下方） ============ */
 .filter-bar{
+  position:sticky;top:calc(var(--topbar-h, 58px) + var(--tabs-h, 44px));z-index:25;
   display:flex;gap:10px;align-items:center;flex-wrap:wrap;
   background:var(--card);border:1px solid var(--line);
-  border-radius:14px;padding:10px 16px;margin-bottom:16px;
+  border-radius:14px;padding:10px 16px;margin:18px 0 16px;
 }
 .filter-bar .sep{flex:1}
 .filter-bar select{

@@ -37,13 +37,25 @@ function makeEl(id) {
   };
 }
 const storage = {};
+// 录入方式单选桩：三个值各一个对象；默认选中「总金额」
+// 外币「兑换」测试通过将 tmodeStubs.exchange.checked 置 true、其余置 false 来切换
+const tmodeStubs = {
+  qty: { value: 'qty', checked: false, onchange: null },
+  amount: { value: 'amount', checked: true, onchange: null },
+  exchange: { value: 'exchange', checked: false, onchange: null },
+};
 globalThis.window = globalThis;
 globalThis.document = {
   readyState: 'complete',
   getElementById(id) { return elements[id] || (elements[id] = makeEl(id)); },
   querySelector(sel) {
-    // 交易录入方式：测试默认「总金额」模式（表单静态 HTML 仍按 defMode 生成）
-    if (sel && sel.includes('tmode')) return { value: 'amount', checked: true, onchange: null };
+    // 交易录入方式单选：按选择器返回对应桩；:checked 返回当前选中项
+    if (sel && sel.includes('tmode')) {
+      if (sel.includes(':checked')) return Object.values(tmodeStubs).find(s => s.checked) || tmodeStubs.amount;
+      const m = sel.match(/\[value="([^"]+)"\]/);
+      if (m) return tmodeStubs[m[1]] || tmodeStubs.qty;
+      return tmodeStubs.amount;
+    }
     return null;
   },
   querySelectorAll() { return []; },
@@ -289,6 +301,9 @@ assert(!priceHtml.includes('id="p-price"'), '非股票不出现单价输入');
 EcoCal.openSettings();
 const settingsHtml = elements['modal-body'].innerHTML || '';
 assert(settingsHtml.includes('id="s-fetch"') && settingsHtml.includes('id="s-base"'), '设置面板含汇率获取与基准币种');
+assert(settingsHtml.includes('id="s-rf"') && settingsHtml.includes('无风险'), '设置面板含统计设置（无风险利率，用于夏普）');
+assert(settingsHtml.includes('id="s-liab"') && settingsHtml.includes('负债'), '设置面板含负债（净资产口径）');
+assert(settingsHtml.includes('id="s-cap"') && settingsHtml.includes('单一标的上限'), '设置面板含单一标的上限阈值（集中度）');
 assert(settingsHtml.includes('id="s-clear"') && settingsHtml.includes('清空全部数据'), '设置面板含清空数据（危险操作）');
 assert(settingsHtml.includes('id="s-autoquote"') && settingsHtml.includes('id="s-autofetch"'), '设置面板含行情/汇率自动开关');
 
@@ -386,6 +401,71 @@ EcoCal.importPayloadText('{not json');
 assert(EcoCal.state.assets.length === beforeLen, '非法 JSON 导入被拒绝且数据不变');
 assert(/^v?\d+\.\d+\.\d+$/.test(EcoCal.APP_VERSION), '版本号格式为 x.y.z（当前 v' + EcoCal.APP_VERSION + '）');
 
+// 4.17 外币「兑换」录入方式（买入填花费人民币 + 买入外币，卖出相反，汇率自动反推）
+function setTmode(exchange) {
+  tmodeStubs.qty.checked = false;
+  tmodeStubs.amount.checked = !exchange;
+  tmodeStubs.exchange.checked = exchange;
+}
+const fxExAsset = { id: 'fxf', name: '美元现汇', category: 'fx', subCategory: '现汇', currency: 'CNY',
+  foreignCurrency: 'USD', principal: 0, quantity: null, startDate: null, note: '', lastPrice: 7.22 };
+EcoCal.state.assets = [fxExAsset];
+EcoCal.state.trades = [];
+setTmode(true); // 兑换模式
+EcoCal.openTradeForm('fxf', 'buy', null);
+let fxTradeHtml = elements['modal-body'].innerHTML || '';
+assert(fxTradeHtml.includes('value="exchange"') && fxTradeHtml.includes('兑换（人民币 × USD）'), '外币买入表单含「兑换」录入方式');
+assert(fxTradeHtml.includes('花费人民币') && fxTradeHtml.includes('买入外币（USD）'), '兑换买入标签：花费人民币 + 买入外币');
+assert(fxTradeHtml.includes('id="t-exchange-row"') && fxTradeHtml.includes('style="display:"'), '兑换行默认可见');
+assert(fxTradeHtml.includes('id="t-qty-row" style="display:none"') && fxTradeHtml.includes('id="t-price-row" style="display:none"') && fxTradeHtml.includes('id="t-amount-row" style="display:none"'), '兑换模式隐藏份数/单价/总金额行');
+// 切到「总金额」：兑换行隐藏、金额行显示（录入方式联动）
+tmodeStubs.qty.checked = false; tmodeStubs.amount.checked = true; tmodeStubs.exchange.checked = false;
+tmodeStubs.amount.onchange(); // 触发 applyMode
+assert(elements['t-exchange-row'].style.display === 'none' && elements['t-amount-row'].style.display === '' && elements['t-qty-row'].style.display === 'none', '切换到总金额：兑换行隐藏、金额行显示');
+setTmode(true);
+// 实时汇率显示：14300 ÷ 2000 = 7.15
+const cnyInput = touch('t-cny'); cnyInput.value = '14300';
+const fxqtyInput = touch('t-fxqty'); fxqtyInput.value = '2000';
+cnyInput.oninput(); fxqtyInput.oninput();
+assert(elements['t-fx-rate'].textContent === '1 USD ≈ 7.15 人民币', '兑换模式实时汇率：14300÷2000 → 1 USD ≈ 7.15 人民币');
+// 兑换买入提交
+touch('t-date').value = '2026-03-01';
+EcoCal.submitTrade('fxf', null, 'buy');
+assert(EcoCal.state.trades.length === 1, '兑换买入生成一笔交易');
+assert(approx(EcoCal.state.trades[0].quantity, 2000) && approx(EcoCal.state.trades[0].price, 7.15) && EcoCal.state.trades[0].mode === 'exchange', '兑换买入：外币 2000、汇率 7.15、模式 exchange');
+// 兑换卖出提交（收回 3650 人民币换出 500 USD → 汇率 7.30）
+EcoCal.openTradeForm('fxf', 'sell', null);
+touch('t-cny').value = '3650';
+touch('t-fxqty').value = '500';
+touch('t-date').value = '2026-03-10';
+EcoCal.submitTrade('fxf', null, 'sell');
+assert(EcoCal.state.trades.length === 2 && approx(EcoCal.state.trades[1].quantity, 500) && approx(EcoCal.state.trades[1].price, 7.3), '兑换卖出：外币 500、汇率 7.30');
+// 兑换卖出超持仓被拦截
+EcoCal.openTradeForm('fxf', 'sell', null);
+touch('t-cny').value = '25000';
+touch('t-fxqty').value = '3000';
+touch('t-date').value = '2026-03-12';
+EcoCal.submitTrade('fxf', null, 'sell');
+assert(EcoCal.state.trades.length === 2, '兑换卖出超持仓被拦截（未生成交易）');
+// 编辑已有 exchange 交易：回填人民币与外币数量，汇率 span 恢复
+EcoCal.openTradeForm('fxf', 'buy', EcoCal.state.trades[0].id);
+fxTradeHtml = elements['modal-body'].innerHTML || '';
+assert(fxTradeHtml.includes('value="2000"') && fxTradeHtml.includes('value="14300"'), '编辑兑换买入：外币 2000 / 人民币 14300 回填');
+assert(fxTradeHtml.includes('1 USD ≈ 7.15 人民币') && fxTradeHtml.includes('id="t-cny"'), '编辑兑换买入：汇率提示恢复为 7.15');
+// 非外币资产：不出现「兑换」方式，也无法以兑换提交
+EcoCal.state.assets = [
+  { id: 'fxx', name: '普通基金', category: 'fund', subCategory: '混合型', currency: 'CNY',
+    principal: 0, quantity: null, startDate: null, note: '', lastPrice: 1.05 },
+];
+EcoCal.state.trades = [];
+setTmode(true); // 尝试强制兑换
+EcoCal.openTradeForm('fxx', 'buy', null);
+const fundTradeHtml = elements['modal-body'].innerHTML || '';
+assert(!fundTradeHtml.includes('t-exchange-row') && !fundTradeHtml.includes('兑换（'), '非外币资产表单无「兑换」方式');
+EcoCal.submitTrade('fxx', null, 'buy'); // 兑换分支应直接拦截
+assert(EcoCal.state.trades.length === 0, '非外币资产用兑换方式提交被拦截');
+setTmode(false); // 恢复默认：总金额
+
 /* ---- 5. 持久化往返：seedDemo → save → load ---- */
 EcoCal.seedDemo();
 assert(EcoCal.state.assets.length === 7, '演示数据含 7 个产品');
@@ -407,27 +487,56 @@ const demoFxA = EcoCal.state.assets.find(a => a.category === 'fx');
 const fxPos = Calc.tradePosition(demoFxA, EcoCal.state.trades, null);
 assert(fxPos.qty === 1500 && fxPos.received === 3650, '演示外币余额 1500 USD、已回收 3650 元');
 
-// 5.1 整页渲染（renderAll）产物检查：卡片/汇总/图表 HTML
+// 5.1 整页渲染（renderAll）产物检查：仪表盘/配置结构/集中度/明细/卡片 HTML
 EcoCal.renderAll();
 const listHtml = elements['asset-list'].innerHTML || '';
-const heroHtml = elements['stats-hero'].innerHTML || '';
-const tilesHtml = elements['stats-tiles'].innerHTML || '';
-const ringHtml = elements['ring-chart'].innerHTML || '';
-const barHtml = elements['bar-chart'].innerHTML || '';
-assert(heroHtml.includes('总市值') && heroHtml.includes('累计收益') && heroHtml.includes('整体年化'), '统计页 Hero 渲染：总市值/累计收益/整体年化');
-assert(tilesHtml.includes('累计投入') && tilesHtml.includes('总盈亏') && tilesHtml.includes('总收益率'), '统计页指标磁贴渲染：投入/盈亏/收益率');
-assert(ringHtml.includes('总市值') && ringHtml.includes('<svg'), '环图渲染：圆心显示总市值');
+const dashHtml = elements['dash-cards'].innerHTML || '';
+const groupsHtml = elements['dist-groups'].innerHTML || '';
+const marketsHtml = elements['dist-markets'].innerHTML || '';
+const currenciesHtml = elements['dist-currencies'].innerHTML || '';
+const concHtml = elements['concentration'].innerHTML || '';
+const detailHtml = elements['detail-table'].innerHTML || '';
+assert(dashHtml.includes('总市值') && dashHtml.includes('净资产') && dashHtml.includes('总投入本金'), '仪表盘：总市值/净资产/总投入本金');
+assert(dashHtml.includes('总浮动盈亏') && dashHtml.includes('已实现盈亏') && dashHtml.includes('总盈亏') && dashHtml.includes('现金 vs 风险资产'), '仪表盘：浮动/已实现/总盈亏/现金vs风险');
+assert(dashHtml.includes('浮动盈亏率'), '仪表盘标注浮动盈亏率口径');
+assert(groupsHtml.includes('股票') && groupsHtml.includes('现金及等价物') && groupsHtml.includes('%'), '资产类别配置：横向条形图含分组与百分比');
+assert(marketsHtml.includes('A股') && marketsHtml.includes('美股'), '市场配置：A股/美股分组');
+assert(currenciesHtml.includes('USD') && currenciesHtml.includes('CNY'), '币种敞口：CNY/USD 分组');
+assert(concHtml.includes('Top 5 持仓占比') && concHtml.includes('Top 10 持仓占比'), '集中度指标卡：Top5/Top10');
+assert(detailHtml.includes('标的名称') && detailHtml.includes('浮动盈亏率') && detailHtml.includes('当日盈亏') && detailHtml.includes('占比'), '明细表：全部所需列');
+assert(!detailHtml.includes('NaN'), '明细表不出现 NaN');
+assert(!concHtml.includes('NaN') && !dashHtml.includes('NaN'), '仪表盘与集中度不出现 NaN');
+// 产品页卡片渲染（v6 口径）
 assert(listHtml.includes('持仓金额') && listHtml.includes('累计投入（成本）'), '非股票卡片侧重金额指标（持仓金额/累计投入）');
-assert(listHtml.includes('USD/CNY') && listHtml.includes('外币余额') && listHtml.includes('当前汇率'), '外币卡片显示币种对与余额、当前汇率');
+assert(listHtml.includes('USD/CNY') && listHtml.includes('外币余额'), '外币卡片显示币种对与余额');
 assert(listHtml.includes('持仓数量') && listHtml.includes('平均成本') && listHtml.includes('现价'), '股票卡片显示数量/均价/现价');
-assert(listHtml.includes('＋ 买入') && listHtml.includes('− 卖出') && listHtml.includes('✎ 市值'), '卡片操作：买入/卖出/改市值按钮');
+assert(listHtml.includes('＋ 买入') && listHtml.includes('− 卖出'), '卡片操作：买入/卖出按钮');
 assert(listHtml.includes('不可卖 · 还需') && listHtml.includes('可卖'), '批次徽章：既有可卖也有不可卖（演示数据）');
-assert(listHtml.includes('浮动盈亏') && listHtml.includes('已实现盈亏') && listHtml.includes('总盈亏'), '卡片含浮动/已实现/总盈亏指标');
-assert(listHtml.includes('折合 CNY：¥19,440.00'), '非基准币种卡片折合金额按汇率换算（2700 USD × 7.2 = 19,440 CNY）');
-assert(ringHtml.includes('<svg') && barHtml.includes('%'), '图表渲染：环图与条形图有内容');
 assert(EcoCal.renderList() === undefined, 'renderList 可重复调用（展开/刷新无异常）');
 
-// 5.2 v6.1 统计增强：组合市值走势（纯函数）
+// 5.1b 统计聚合正确性（Calc.statistics）
+EcoCal.seedDemo();
+const st = Calc.statistics(EcoCal.state.assets, EcoCal.state.trades, EcoCal.state.settings, { liabilities: 0, singleAssetCap: 20 });
+assert(st.totalValue > 0 && approx(st.netWorth, st.totalValue - 0), '总市值>0，净资产 = 总市值 − 负债');
+assert(approx(st.totalProfit, st.totalFloat + st.totalRealized), '总盈亏 = 总浮动 + 已实现');
+assert(approx(st.floatRate, st.totalFloat / st.totalCost), '浮动盈亏率 = 总浮动 ÷ 总投入本金');
+assert(st.cashValue > 0 && approx(st.riskValue, st.totalValue - st.cashValue) && approx((st.cashPct || 0) + (st.riskPct || 0), 1), '现金 + 风险资产 = 总市值，占比和为 100%');
+// 现金及等价物包含：大额存单（存款）+ 美元现汇（外币）+ …（演示数据 a5/a7）
+const groupSum = st.groups.reduce((s, g) => s + g.value, 0);
+assert(approx(groupSum, st.totalValue), '类别分组市值合计 = 总市值');
+assert(st.groups.some(g => g.label === '基金ETF') && st.groups.some(g => g.label === '现金及等价物') && st.groups.some(g => g.label === '股票'), '类别分组含基金ETF/现金及等价物/股票');
+assert(st.markets.some(m => m.label === 'A股') && st.markets.some(m => m.label === '美股'), '市场分组含 A股/美股');
+assert(st.currencies.some(c => c.label === 'CNY') && st.currencies.some(c => c.label === 'USD'), '币种敞口含 CNY/USD');
+// 集中度：演示数据最大持仓 = 大额存单（¥100,600 / 总市值），占比超上限 20%
+assert(st.maxAsset && st.maxAsset.name.includes('大额存单'), '单一标的最大持仓为大额存单');
+assert(st.maxAsset.pct * 100 > 20 && st.overLimit.some(o => o.name.includes('大额存单')), '单一标的占比超过 20% 上限 → 超限提示');
+assert(st.top10 >= st.top5 && st.top5 > 0, 'Top10 ≥ Top5 > 0');
+// 明细：按市值降序；当日盈亏无行情缓存 → '--'
+const sortedOk = st.detail.every((r, i) => i === 0 || (st.detail[i - 1].baseValue || 0) >= (r.baseValue || 0));
+assert(sortedOk, '明细按市值降序');
+assert(st.detail[0].asset.name.includes('大额存单'), '明细第一行为市值最大的大额存单');
+
+// 5.2 组合市值走势（纯函数）
 const trendAsset = { id: 'tr1', name: '股票', category: 'stock', subCategory: 'A股', currency: 'CNY',
   principal: 0, quantity: null, startDate: null, note: '', lastPrice: 11 };
 const trendTrades = [
@@ -446,30 +555,13 @@ const trendUsd = Calc.portfolioTrend(
   { baseCurrency: 'CNY', rates: { USD: 7.2 } }, '2025-01-15');
 assert(approx(trendUsd[1].value, 1200 * 7.2), 'USD 市值按汇率换算为 CNY');
 
-// 5.3 v6.1 统计增强：环图维度汇总 + 盈亏构成卡片 + 图表点击筛选
+// 5.3 统计页渲染：盈亏构成 + 走势（附加视图）
 EcoCal.seedDemo();
-const ringByCat = EcoCal.ringDataByDim('category');
-assert(ringByCat.some(d => d.label === '基金') && ringByCat.some(d => d.label === '外币'), '环图·按类别：含基金与外币');
-const ringByCur = EcoCal.ringDataByDim('currency');
-assert(ringByCur.some(d => d.label === 'USD（外币）'), '环图·按币种：外币产品按其外币币种（USD（外币））');
-const ringByRisk = EcoCal.ringDataByDim('risk');
-assert(ringByRisk.some(d => d.label === 'R5') && ringByRisk.some(d => d.label === 'R1'), '环图·按风险等级：R1 与 R5 均存在');
 EcoCal.renderAll();
 assert((elements['trend-chart'].innerHTML || '').includes('组合市值'), '组合走势图渲染（含图例）');
-assert((elements['profit-chart'].innerHTML || '').includes('总盈亏构成'), '盈亏构成卡片渲染');
-assert((elements['bar-chart'].innerHTML || '').includes('data-bar-id='), '条形图行带可点击筛选标记');
-assert((elements['ring-chart'].innerHTML || '').includes('data-dim-key='), '环图切片带可点击筛选标记');
-// 点击筛选：按风险等级 R1 → 列表只含 R1 产品
-EcoCal.setChartFilter('risk', 'R1');
-const filteredListHtml = elements['asset-list'].innerHTML || '';
-assert(!filteredListHtml.includes('苹果（AAPL）') && filteredListHtml.includes('美元现汇'), '按风险 R1 筛选后列表不再含 R5 的苹果，仍含 R1 的美元现汇');
-assert(!elements['chart-filter-bar'].classList.contains('hidden'), '图表筛选状态条显示');
-EcoCal.clearChartFilter();
-assert(elements['chart-filter-bar'].classList.contains('hidden'), '清除图表筛选后状态条隐藏');
-// 按大类筛选（环图点击）
-EcoCal.setChartFilter('category', 'stock');
-assert((elements['asset-list'].innerHTML || '').includes('招商银行') && !(elements['asset-list'].innerHTML || '').includes('沪深300'), '按类别=股票筛选生效');
-EcoCal.clearChartFilter();
+const profitHtml = elements['profit-chart'].innerHTML || '';
+assert(profitHtml.includes('浮动 vs 已实现') && profitHtml.includes('盈利 vs 亏损产品'), '盈亏构成以双环图渲染（浮动vs已实现 / 盈利vs亏损）');
+assert((profitHtml.match(/chart-legend/g) || []).length >= 2, '盈亏构成含两个环图图例');
 
 // 5.4 主界面分页：产品 / 统计（独立 Tab）
 EcoCal.switchTab('stats');
@@ -480,6 +572,44 @@ assert(elements['panel-assets'].classList.contains('hidden') === false, '切回�
 assert(elements['panel-stats'].classList.contains('hidden') === true, '切回「产品」页签：统计面板隐藏');
 EcoCal.switchTab('unknown'); // 非法值回退到产品页
 assert(elements['panel-assets'].classList.contains('hidden') === false, '非法 Tab 值回退到产品页');
+
+// 5.5 走势卡扩展：回撤 / CAGR / 波动率 / 夏普 / XIRR / 模式切换
+const ddPoints = [
+  { date: '2025-01-01', value: 100 },
+  { date: '2025-02-01', value: 120 },
+  { date: '2025-03-01', value: 90 },
+  { date: '2025-04-01', value: 110 },
+];
+const dd = Calc.maxDrawdown(ddPoints);
+assert(approx(dd.maxDD, 90 / 120 - 1), '最大回撤 = 90/120 - 1 = -25%');
+assert(dd.start === '2025-02-01' && dd.end === '2025-03-01', '回撤区间：峰值 2025-02-01 → 谷值 2025-03-01');
+assert(approx(dd.currentDD, 110 / 120 - 1), '当前回撤相对历史峰值 -8.33%');
+assert(approx(Calc.cagr([{ date: '2025-01-01', value: 100 }, { date: '2026-01-01', value: 110 }]), 0.10), 'CAGR：一年 100→110 = 10%');
+assert(Calc.annualVol([{ date: '2025-01-01', value: 100 }, { date: '2025-02-01', value: 100 }, { date: '2025-03-01', value: 100 }]) === 0, '年化波动率：恒定市值 = 0');
+const volUp = Calc.annualVol([{ date: '2025-01-01', value: 100 }, { date: '2025-02-01', value: 110 }, { date: '2025-03-01', value: 100 }]);
+assert(volUp != null && volUp > 0, '年化波动率：波动序列为正');
+const sh = Calc.sharpe([{ date: '2025-01-01', value: 100 }, { date: '2025-03-01', value: 110 }, { date: '2025-06-01', value: 95 }], 0.02);
+assert(sh != null && isFinite(sh), '夏普比率可计算（下跌序列为负值）');
+// XIRR / IRR
+const xirrAsset = { id: 'xr1', name: '定投', category: 'fund', subCategory: '指数型', currency: 'CNY', principal: 0, quantity: null, startDate: null, note: '', lastPrice: 11 };
+const xirrTrades = [{ id: 'xr1t', assetId: 'xr1', type: 'buy', date: '2025-01-01', quantity: 100, price: 10, fee: 0, note: '' }];
+const xirr = Calc.xirr([xirrAsset], xirrTrades, { baseCurrency: 'CNY', rates: {} }, '2026-01-01');
+assert(xirr != null && approx(xirr, 0.10, 1e-6), 'XIRR：投入1000 → 一年后市值1100，年化 10%');
+assert(approx(Calc.irr([{ date: '2025-01-01', amount: -1000 }, { date: '2026-01-01', amount: 1100 }], '2026-01-01'), 0.10, 1e-6), 'IRR：单笔现金流年化 10%');
+// 走势模式切换
+EcoCal.seedDemo();
+EcoCal.renderAll();
+const trendStats = elements['trend-stats'].innerHTML || '';
+assert(trendStats.includes('最大回撤') && trendStats.includes('夏普') && trendStats.includes('XIRR'), '走势指标条渲染：回撤/夏普/XIRR');
+assert((elements['trend-chart'].innerHTML || '').includes('组合市值（估算）'), '走势默认模式：市值 vs 净投入');
+EcoCal.setTrendMode('profit');
+assert((elements['trend-chart'].innerHTML || '').includes('累计收益'), '走势模式·累计收益');
+EcoCal.setTrendMode('rate');
+assert((elements['trend-chart'].innerHTML || '').includes('收益率'), '走势模式·收益率');
+EcoCal.setTrendMode('dd');
+assert((elements['trend-chart'].innerHTML || '').includes('回撤（%）'), '走势模式·回撤');
+EcoCal.setTrendMode('dual');
+assert((elements['trend-chart'].innerHTML || '').includes('组合市值（估算）'), '恢复走势模式·市值 vs 净投入');
 
 /* ---- 汇总结果 ---- */
 console.log('\n结果：' + pass + ' 通过，' + fail + ' 失败');

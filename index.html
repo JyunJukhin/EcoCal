@@ -33,35 +33,55 @@
     <button type="button" class="tab" data-tab="stats" role="tab">统计</button>
   </nav>
 
-  <!-- 统计面板：资产速览 + 图表（独立于产品列表） -->
+  <!-- 统计面板（独立于产品列表）：仪表盘 + 配置结构 + 集中度 + 明细 + 走势/构成 -->
   <section class="tab-panel hidden" id="panel-stats" role="tabpanel">
-    <!-- 资产速览：Hero + 指标磁贴 + 币种分布 -->
-    <section class="stats-hero" id="stats-hero"></section>
-    <section class="stats-tiles" id="stats-tiles"></section>
-    <div class="currency-subtotals" id="currency-subtotals"></div>
+    <h3 class="stats-sec">核心仪表盘</h3>
+    <section class="dash-cards" id="dash-cards"></section>
 
-    <!-- 图表区：2 列自适应卡片 -->
+    <h3 class="stats-sec">配置与结构</h3>
+    <section class="struct-grid">
+      <div class="card chart-card">
+        <div class="chart-head"><h2>资产类别配置</h2><span class="chart-desc">股票/债券/基金ETF/商品/数字货币/现金及等价物/其他</span></div>
+        <div id="dist-groups"></div>
+      </div>
+      <div class="card chart-card">
+        <div class="chart-head"><h2>市场配置</h2><span class="chart-desc">A股 / 港股 / 美股 / 其他</span></div>
+        <div id="dist-markets"></div>
+      </div>
+      <div class="card chart-card struct-wide">
+        <div class="chart-head"><h2>币种敞口</h2><span class="chart-desc">CNY / USD / HKD / 其他 · 未对冲</span></div>
+        <div id="dist-currencies"></div>
+      </div>
+    </section>
+
+    <h3 class="stats-sec">集中度</h3>
+    <section class="card chart-card">
+      <div class="chart-head"><h2>集中度</h2><span class="chart-desc">单一标的上限可在设置中调整</span></div>
+      <div id="concentration"></div>
+    </section>
+
+    <h3 class="stats-sec">持仓明细</h3>
+    <section class="card chart-card">
+      <div class="chart-head"><h2>持仓明细</h2><span class="chart-desc">按市值降序</span></div>
+      <div id="detail-table"></div>
+    </section>
+
+    <h3 class="stats-sec">走势与构成（附加视图）</h3>
     <section class="charts-grid">
       <div class="card chart-card">
-        <div class="chart-head"><h2>资产结构</h2><span class="chart-desc">市值占比 · 点击切片筛选产品</span></div>
-        <div class="dim-toggle" id="ring-dims">
-          <button type="button" data-dim="category" class="active">按类别</button>
-          <button type="button" data-dim="currency">按币种</button>
-          <button type="button" data-dim="risk">按风险等级</button>
+        <div class="chart-head"><h2>组合走势</h2><span class="chart-desc" id="trend-desc">估值市值与累计净投入对比</span></div>
+        <div class="dim-toggle" id="trend-modes">
+          <button type="button" data-mode="dual" class="active">市值 vs 净投入</button>
+          <button type="button" data-mode="profit">累计收益</button>
+          <button type="button" data-mode="rate">收益率</button>
+          <button type="button" data-mode="dd">回撤</button>
         </div>
-        <div class="chart-box" id="ring-chart"></div>
+        <div class="chart-box" id="trend-chart"></div>
+        <div class="trend-stats" id="trend-stats"></div>
       </div>
       <div class="card chart-card">
         <div class="chart-head"><h2>盈亏构成</h2><span class="chart-desc">浮动 vs 已实现 · 盈 vs 亏</span></div>
         <div class="chart-box" id="profit-chart"></div>
-      </div>
-      <div class="card chart-card">
-        <div class="chart-head"><h2>组合市值走势</h2><span class="chart-desc">估算市值 vs 累计净投入</span></div>
-        <div class="chart-box" id="trend-chart"></div>
-      </div>
-      <div class="card chart-card">
-        <div class="chart-head"><h2>市值排行</h2><span class="chart-desc">点击可只看该产品</span></div>
-        <div class="chart-box" id="bar-chart"></div>
       </div>
     </section>
   </section>
@@ -76,12 +96,6 @@
       <span class="sep"></span>
       <span class="filter-label">排序：</span>
       <select id="filter-sort" title="排序方式"></select>
-    </section>
-
-    <!-- 图表点击筛选状态条 -->
-    <section class="filter-bar hidden" id="chart-filter-bar">
-      <span class="filter-label" id="chart-filter-text"></span>
-      <button id="chart-filter-clear" class="btn btn-mini ghost">✕ 清除图表筛选</button>
     </section>
 
     <!-- 产品列表 -->
