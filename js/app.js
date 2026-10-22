@@ -17,7 +17,7 @@ const STORAGE_KEY = 'ecocal.data.v1';
  * - 主版本：重大架构/功能（v3 多文件、v4 股票交易与行情、v6 交易记录全模式）
  * - 次版本：功能增强（v5 监察表模式与优化、v6.1 统计功能、v6.2 统计页重设计）
  * - 补丁：缺陷修复 */
-const APP_VERSION = '6.3.0';
+const APP_VERSION = '6.3.1';
 
 const CURRENCIES = {
   CNY: { symbol: '¥',  name: '人民币' },
@@ -329,11 +329,13 @@ function assetMinHold(asset) {
 const Calc = {
   /**
    * 交易记录模式持仓计算（加权平均成本口径）。
-   * trades：该产品的全部交易（buy/sell）；lastPrice：最新股价（null 表示行情缺失）。
+   * trades：该产品的全部交易（buy/sell）；lastPrice：最新股价/汇率（null 表示行情缺失）。
    * 返回 { qty, cost, avgCost, realized, marketValue, float, totalProfit, events, days, hasTrades }
    *   - float    浮动盈亏 = 市值 − 持仓成本
    *   - realized 已实现盈亏 = Σ(卖出金额 − 卖出数量×当时平均成本)
    *   - totalProfit = 浮动 + 已实现
+   * 口径：lastPrice 缺失且有持仓时，市值回退用「最近成交价」估算（与走势图一致），
+   *       已完成清仓（qty=0）或尚无任何交易时市值仍为 null。
    */
   tradePosition(asset, trades, lastPrice, today) {
     const list = trades
@@ -364,7 +366,18 @@ const Calc = {
       }
     });
     const avgCost = qty > 0 ? cost / qty : 0;
-    const marketValue = (lastPrice != null && qty > 0) ? round2(qty * lastPrice) : null;
+    // 市场价：优先用传入的 lastPrice（现价/汇率）；缺失时有持仓则回退最近成交价
+    // —— 与组合走势图（portfolioTrend）口径一致。修复：仅一笔买入且未设现价的
+    //    资产（如导入数据没带 lastPrice）此前市值显示 --、统计总额漏算。
+    let fallbackPrice = null;
+    if (lastPrice == null && qty > 0) {
+      for (let i = list.length - 1; i >= 0; i--) {
+        const cand = Number(list[i].price);
+        if (isFinite(cand) && cand > 0) { fallbackPrice = cand; break; }
+      }
+    }
+    const valPrice = (lastPrice != null && Number(lastPrice) > 0) ? Number(lastPrice) : fallbackPrice;
+    const marketValue = (valPrice != null && qty > 0) ? round2(qty * valPrice) : null;
     const float = marketValue != null ? round2(marketValue - cost) : null;
     const totalProfit = round2((float != null ? float : 0) + realized);
     // 持有天数（近似口径）：从首笔交易日到今天

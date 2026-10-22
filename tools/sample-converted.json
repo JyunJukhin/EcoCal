@@ -1,0 +1,44 @@
+{
+  "app": "EcoCal",
+  "version": 1,
+  "exportedAt": "2026-10-22T03:00:00.000Z",
+  "assets": [
+    {
+      "id": "asset_1", "name": "招商银行", "category": "stock", "subCategory": "A股",
+      "currency": "CNY", "foreignCurrency": null, "symbol": "sh600036",
+      "note": "", "riskLevel": "R4", "tPlusN": 1, "startDate": null,
+      "principal": 0, "quantity": null, "minHoldDays": null,
+      "lastPrice": 38.52, "priceSource": "manual", "lastQuoteAt": 1761000000000,
+      "createdAt": 1761000000000, "updatedAt": 1761000000000
+    },
+    {
+      "id": "asset_2", "name": "沪深300指数基金", "category": "fund", "subCategory": "指数型",
+      "currency": "CNY", "foreignCurrency": null, "symbol": null,
+      "note": "定投账户", "riskLevel": "R3", "tPlusN": 1, "startDate": null,
+      "principal": 0, "quantity": null, "minHoldDays": null,
+      "lastPrice": 1.234, "priceSource": "manual", "lastQuoteAt": 1761000000000,
+      "createdAt": 1761000000000, "updatedAt": 1761000000000
+    },
+    {
+      "id": "asset_3", "name": "美元现汇", "category": "fx", "subCategory": "现汇",
+      "currency": "CNY", "foreignCurrency": "USD", "symbol": null,
+      "note": "", "riskLevel": "R1", "tPlusN": 0, "startDate": null,
+      "principal": 0, "quantity": null, "minHoldDays": null,
+      "lastPrice": 7.22, "priceSource": "manual", "lastQuoteAt": 1761000000000,
+      "createdAt": 1761000000000, "updatedAt": 1761000000000
+    }
+  ],
+  "valuations": [],
+  "trades": [
+    { "id": "trade_1", "assetId": "asset_1", "type": "buy",  "date": "2025-01-10", "quantity": 1000, "price": 36.0, "fee": 5, "note": "建仓",   "mode": "qty", "minHoldDays": 1, "createdAt": 1736467200000 },
+    { "id": "trade_2", "assetId": "asset_1", "type": "sell", "date": "2025-06-01", "quantity": 200,  "price": 40.5, "fee": 4, "note": "止盈",   "mode": "qty", "minHoldDays": null, "createdAt": 1748736000000 },
+    { "id": "trade_3", "assetId": "asset_2", "type": "buy",  "date": "2025-03-01", "quantity": 8000, "price": 1.15, "fee": 0, "note": "申购",   "mode": "amount", "minHoldDays": 7, "createdAt": 1740787200000 },
+    { "id": "trade_4", "assetId": "asset_3", "type": "buy",  "date": "2025-02-01", "quantity": 2000, "price": 7.15, "fee": 0, "note": "兑换美元", "mode": "exchange", "minHoldDays": null, "createdAt": 1738368000000 },
+    { "id": "trade_5", "assetId": "asset_3", "type": "sell", "date": "2025-08-01", "quantity": 500,  "price": 7.30, "fee": 0, "note": "换回人民币", "mode": "exchange", "minHoldDays": null, "createdAt": 1753977600000 }
+  ],
+  "settings": {
+    "baseCurrency": "CNY",
+    "rates": { "USD": 7.2, "HKD": 0.92 },
+    "demoDismissed": true
+  }
+}

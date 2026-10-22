@@ -132,6 +132,23 @@ pos = Calc.tradePosition(tAsset, [
 assert(pos.qty === 100 && approx(pos.cost, 1300) && approx(pos.realized, 200), '清仓再买：数量100、成本1300、已实现200');
 assert(pos.events.length === 3 && pos.events[1].trade.date === '2025-02-01', '交易事件按日期排序');
 
+// 4.1b lastPrice 缺失时市值回退最近成交价（与走势图口径一致）
+pos = Calc.tradePosition(tAsset, [
+  mkTrade('buy', '2025-01-01', 100, 10),
+  mkTrade('buy', '2025-01-10', 100, 12),
+], null);
+assert(pos.marketValue != null && approx(pos.marketValue, 2400), '无现价但有持仓 → 市值按最近成交价 12 估算 2400');
+assert(approx(pos.float, 200) && approx(pos.totalProfit, 200), '无现价回退：浮动 = 2400 − 2200 = 200，总盈亏 200');
+// 清仓后无持仓 → 市值仍为 null（避免把已清仓资产误算成有市值）
+pos = Calc.tradePosition(tAsset, [
+  mkTrade('buy', '2025-01-01', 100, 10),
+  mkTrade('sell', '2025-02-01', 100, 12),
+], null);
+assert(pos.qty === 0 && pos.marketValue === null, '清仓后无持仓 → 市值保持 null');
+// 完全无交易 → 市值 null
+pos = Calc.tradePosition(tAsset, [], null);
+assert(pos.marketValue === null && pos.cost === 0 && pos.qty === 0, '无任何交易 → 市值 null、成本 0');
+
 // 4.2 FIFO 批次（lots）与可卖判定（批次各自最低持有天数）
 const fundAsset = { id: 'f1', name: '基金', category: 'fund', subCategory: '混合型', currency: 'CNY',
   principal: 0, quantity: null, startDate: null, note: '' };
