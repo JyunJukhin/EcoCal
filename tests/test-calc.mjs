@@ -73,6 +73,25 @@ globalThis.prompt = () => null;
 globalThis.Blob = function () {};
 globalThis.FileReader = function () {};
 globalThis.URL = { createObjectURL: () => 'blob:x', revokeObjectURL: () => {} };
+// app.js 的 WebDAV Basic 认证用 btoa(unescape(encodeURIComponent(...)))，
+// 测试环境没有 btoa，这里给一个纯 JS 实现（严格 UTF-8 base64 编码）
+if (typeof globalThis.btoa !== 'function') {
+  globalThis.btoa = bin => {
+    const bytes = new TextEncoder().encode(bin);
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    let out = '';
+    for (let i = 0; i < bytes.length; i += 3) {
+      const b0 = bytes[i], b1 = bytes[i + 1], b2 = bytes[i + 2];
+      out += chars[b0 >> 2];
+      out += chars[((b0 & 3) << 4) | (b1 === undefined ? 0 : b1 >> 4)];
+      if (b1 === undefined) { out += '=='; continue; }
+      out += chars[((b1 & 15) << 2) | (b2 === undefined ? 0 : b2 >> 2)];
+      if (b2 === undefined) { out += '='; continue; }
+      out += chars[b2 & 63];
+    }
+    return out;
+  };
+}
 
 eval(appJs);
 const EcoCal = globalThis.__EcoCal;
@@ -627,6 +646,302 @@ EcoCal.setTrendMode('dd');
 assert((elements['trend-chart'].innerHTML || '').includes('回撤（%）'), '走势模式·回撤');
 EcoCal.setTrendMode('dual');
 assert((elements['trend-chart'].innerHTML || '').includes('组合市值（估算）'), '恢复走势模式·市值 vs 净投入');
+
+/* ---- 6. 云备份（WebDAV）---- */
+// 6.1 配置与路径规范化（纯逻辑，不依赖网络）
+const wd = EcoCal.webdavBackup;
+EcoCal.state.settings.webdav = {
+  enabled: true, url: 'https://dav.example.com/dav/', user: 'alice', dir: 'EcoCal/备份',
+  lastBackupAt: null, lastError: null,
+};
+assert(wd.normDir('EcoCal/备份') === 'EcoCal/备份', '目录规范化：正常路径保留');
+assert(wd.normDir(' /a/b/c/ ') === 'a/b/c', '目录规范化：去除首尾斜杠与空格');
+assert(wd.normDir('..\\..\\evil') === 'evil', '目录规范化：防目录穿越');
+assert(wd.remotePath() === 'EcoCal/备份/ecocal-backup.json', '远程文件路径 = 目录 + 固定文件名 ecocal-backup.json');
+EcoCal.state.settings.webdav.dir = '';
+assert(wd.remotePath() === 'ecocal-backup.json', '目录为空时文件名放根路径');
+wd.setPass('topsecret');
+assert(wd.getPass() === 'topsecret', '应用密码独立存取（localStorage 专用键）');
+const passKey = Object.keys(storage).find(k => k.includes('webdav'));
+assert(passKey !== undefined && !JSON.stringify(EcoCal.buildExportPayload()).includes('topsecret'), '备份内容不包含应用密码');
+EcoCal.state.settings.webdav.dir = 'EcoCal';
+assert(wd.validate() === null, '配置齐全时校验通过');
+assert(wd.validate() === null, '配置齐全时校验通过（无网络）');
+assert(wd.remotePath() === 'EcoCal/ecocal-backup.json', '远程路径用配置的目录');
+
+// 6.2 请求封装：凭据头部（验证 Basic 编码）
+const base64 = wd.authHeader();
+assert(typeof base64 === 'string' && base64.startsWith('Basic '), '认证头格式：Basic 前缀');
+// 6.3 校验：缺配置/坏 URL 返回错误信息
+const savedCfg = { ...EcoCal.state.settings.webdav };
+EcoCal.state.settings.webdav = { enabled: true, url: '', user: 'u', dir: 'D' };
+assert(wd.validate() !== null, '缺 URL 时校验失败');
+EcoCal.state.settings.webdav = { enabled: true, url: 'not-a-url', user: 'u', dir: 'D' };
+assert(wd.validate() !== null, '非 http(s) URL 时校验失败');
+EcoCal.state.settings.webdav = savedCfg;
+
+// 6.4 WebDAV 全链路（mock fetch）：测试连接 / 备份 PUT / 读取 GET / 恢复
+//     与 app.js 的 WebDAV 语义对齐：PUT 需 201/204/200，MKCOL 容忍 201/405/200/301
+const wdServer = { stores: new Map(), mkcol: new Set(), status: 201, lastAuth: null, lastMethod: null, lastUrl: null };
+const fakeResp = (status, body = '', headers = {}) => ({
+  ok: status >= 200 && status < 300, status,
+  headers: { get: k => headers[k] || null },
+  text: () => Promise.resolve(body), json: () => Promise.resolve(JSON.parse(body)),
+});
+const origFetch = globalThis.fetch;
+let wdThrew = null;
+globalThis.fetch = async (url, opts = {}) => {
+  wdServer.lastMethod = opts.method || 'GET';
+  wdServer.lastUrl = url;
+  wdServer.lastAuth = opts.headers ? opts.headers.Authorization || opts.headers.authorization || null : null;
+  const method = opts.method || 'GET';
+  const u = String(url);
+  try {
+    if (method === 'MKCOL') {
+      // wdServer.mkcol 状态：已存在 405；403 模拟「Zotero 目录只读」；两者都应被宽容
+      if (wdServer.mkcol.has(u)) return fakeResp(405);
+      wdServer.mkcol.add(u);
+      return fakeResp(wdServer.mkcolStatus || 201);
+    }
+    if (method === 'PUT') {
+      const body = opts.body == null ? '' : (typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body));
+      wdServer.stores.set(u, body);
+      return fakeResp(wdServer.status);
+    }
+    if (method === 'GET') {
+      if (!wdServer.stores.has(u)) return fakeResp(404);
+      return fakeResp(200, wdServer.stores.get(u));
+    }
+    if (method === 'DELETE') {
+      wdServer.stores.delete(u);
+      return fakeResp(204);
+    }
+    return fakeResp(200);
+  } catch (e) { wdThrew = e; throw e; }
+};
+
+// —— 准备一份真实可导入的载荷 ——
+EcoCal.state.settings.webdav = { enabled: true, url: 'https://wd.example.com/dav/', user: 'alice', dir: 'EcoCal', lastBackupAt: null, lastError: null };
+wd.setPass('topsecret');
+
+// 6.4.1 测试连接 → MKCOL + 探针 PUT/DELETE
+try {
+  const r = await wd.testConnection();
+  assert(r === true, 'testConnection：MKCOL + 探针 PUT/DELETE 成功');
+  assert(wdServer.mkcol.has('https://wd.example.com/dav/EcoCal'), 'testConnection 创建了目录 EcoCal');
+} catch (e) {
+  assert(false, 'testConnection 不应抛错（' + e.message + '）' + (wdThrew ? '；fetch 异常：' + wdThrew.message : ''));
+}
+
+// 6.4.1b Zotero 式只读目录（MKCOL 403）：不应阻断探针 PUT 判定真实写权限
+wdServer.mkcolStatus = 403;
+const r403 = await wd.testConnection();
+assert(r403 === true, 'MKCOL 返回 403（目录只读/不可建）时 testConnection 仍通过（写权限由探针 PUT 判定）');
+wdServer.mkcolStatus = 201;
+
+// 6.4.2 立即备份 → PUT 远端文件，内容为导出载荷
+const bk = await wd.backup();
+assert(typeof bk === 'string' && bk.length > 0, 'backup() 返回备份文本（PUT 远端 ecocal-backup.json）');
+const remoteKey = wd.remotePath();
+const keyFull = 'https://wd.example.com/dav/' + remoteKey;
+assert(wdServer.stores.has(keyFull), '远端文件已写入（' + keyFull + '）');
+const stored = JSON.parse(wdServer.stores.get(keyFull));
+assert(stored.app === 'EcoCal' && Array.isArray(stored.assets) && stored.assets.length > 0, '远端备份为 EcoCal 导出格式且含资产');
+wdServer.status = 409;
+let putFail = null;
+try { await wd.backup(); } catch (e) { putFail = e; }
+assert(putFail !== null, 'PUT 被拒（409）时 backup() 抛错');
+wdServer.status = 201;
+assert(wdServer.lastAuth != null && String(wdServer.lastAuth).startsWith('Basic '), 'WebDAV 请求带 Basic 认证头');
+
+// 6.4.3 自动备份节流：saveState() 后 10 秒内应触发一次 PUT
+wdServer.stores.delete(keyFull);
+EcoCal.state.assets[0].name = '自动备份覆盖测试';
+EcoCal.saveState();
+assert(!wdServer.stores.has(keyFull), 'saveState 后尚未立即上传（节流等待中）');
+await new Promise(r => setTimeout(r, 300));
+assert(!wdServer.stores.has(keyFull), '节流窗口内（10s 前）不重复上传');
+await new Promise(r => setTimeout(r, 10500));
+assert(wdServer.stores.has(keyFull), '自动备份已上传最新数据（节流 10s 后）');
+const autoStored = JSON.parse(wdServer.stores.get(keyFull));
+assert(autoStored.assets[0].name === '自动备份覆盖测试', '自动备份内容为最新本地数据');
+EcoCal.state.assets[0].name = '测试资产';
+
+// 6.4.4 读取远端 / 恢复流程（fetchRemote + manualWebdavRestore 还原本地）
+wdServer.status = 200;
+const fr = await wd.fetchRemote();
+assert(fr != null && fr.app === 'EcoCal' && fr.assets.length > 0, 'fetchRemote 读取远端备份成功');
+// 远端当前内容 = 上次自动上传时（本地名为「自动备份覆盖测试」）
+const cloudName = fr.assets[0].name;
+// 篡改本地一个字段，随后恢复应还原为云端内容
+EcoCal.state.assets[0].name = '本地将被云端覆盖';
+const restore = await EcoCal.manualWebdavRestore(); // 弹出确认框（异步，不执行覆盖）
+assert(restore === undefined, 'manualWebdavRestore 先弹出确认框（等待用户点击）');
+assert(elements['confirm-ok'].onclick != null, '恢复确认框已挂接确认回调');
+assert(EcoCal.state.assets[0].name === '本地将被云端覆盖', '确认前本地数据尚未被覆盖');
+// 点击确认 → 快照下载 + applyPayload + renderAll
+elements['confirm-ok'].onclick();
+assert(EcoCal.state.assets[0].name === cloudName, '确认恢复后本地数据已从云端还原（' + cloudName + '）');
+const restoreCount = EcoCal.state.assets.length;
+assert(restoreCount > 0, '恢复后资产数量正常（' + restoreCount + '）');
+assert(wdServer.stores.has(keyFull), '恢复过程未删除远端文件');
+// 恢复时本地应另存快照（下载 JSON）：downloadJSON 在桩中触发 a.click()，不抛错即可
+
+// 6.4.5 enabled=false 时 saveState 不再触发上传
+wdServer.stores.delete(keyFull);
+EcoCal.state.settings.webdav.enabled = false;
+EcoCal.saveState();
+await new Promise(r => setTimeout(r, 300));
+assert(!wdServer.stores.has(keyFull), '禁用自动备份后 saveState 不上传');
+EcoCal.state.settings.webdav.enabled = true;
+
+globalThis.fetch = origFetch;
+
+/* ---- 7. 云备份（Gitee 仓库）：contents API 全链路 ---- */
+const gb = EcoCal.giteeBackup;
+EcoCal.state.settings.gitee = { enabled: true, owner: 'myuser', repo: 'ecocal-backup', path: '', lastBackupAt: null, lastError: null };
+gb.setToken('git-secret-token-123');
+// 7.1 令牌独立存取（不进 state / 备份内容）
+assert(gb.getToken() === 'git-secret-token-123', 'Gitee 令牌独立存取（localStorage 专用键）');
+const gTokenKey = Object.keys(storage).find(k => k.includes('gitee'));
+assert(gTokenKey !== undefined && !JSON.stringify(EcoCal.buildExportPayload()).includes('git-secret-token-123'), '备份内容不包含 Gitee 令牌');
+// 7.2 配置校验
+assert(gb.validate() === null, 'Gitee 配置齐全时校验通过');
+const savedCfgG = { ...EcoCal.state.settings.gitee };
+EcoCal.state.settings.gitee = { enabled: true, owner: '', repo: 'r', path: '', lastBackupAt: null, lastError: null };
+assert(gb.validate() !== null, '缺 owner 时校验失败');
+EcoCal.state.settings.gitee = { enabled: true, owner: 'u!!!', repo: 'r', path: '', lastBackupAt: null, lastError: null };
+assert(gb.validate() !== null, 'owner 含非法字符时校验失败');
+EcoCal.state.settings.gitee = { enabled: true, owner: 'u', repo: 'r', path: '', lastBackupAt: null, lastError: null };
+gb.setToken(''); // 清除令牌 → 缺令牌校验失败
+assert(gb.validate() !== null, '缺令牌时校验失败');
+EcoCal.state.settings.gitee = savedCfgG;
+gb.setToken('git-secret-token-123');
+// 7.3 仓库内路径
+assert(gb.path === 'ecocal-backup.json', '默认备份路径 ecocal-backup.json');
+EcoCal.state.settings.gitee.path = 'data/backup.json';
+assert(gb.path === 'data/backup.json', '自定义备份路径');
+EcoCal.state.settings.gitee.path = '';
+
+// 7.4 mock Gitee contents API（GET 带 access_token query；写为 form body）
+const giteeServer = { files: new Map(), lastGets: [], lastWrites: [], userStatus: null };
+const fakeGJson = (status, obj) => ({
+  ok: status >= 200 && status < 300, status,
+  headers: { get: k => (k === 'content-type' ? 'application/json' : null) },
+  text: () => Promise.resolve(JSON.stringify(obj)),
+  json: () => Promise.resolve(obj),
+});
+const origFetch2 = globalThis.fetch;
+let gThrew = null;
+globalThis.fetch = async (url, opts = {}) => {
+  const method = opts.method || 'GET';
+  const u = String(url);
+  try {
+    if (u.includes('/api/v5/user')) {
+      giteeServer.lastGets.push(['user', u]);
+      if (giteeServer.userStatus) return fakeGJson(giteeServer.userStatus, { message: '无效的令牌' });
+      return fakeGJson(200, { login: 'myuser', name: 'My Name' });
+    }
+    const contentsIdx = u.indexOf('/contents/');
+    if (contentsIdx !== -1) {
+      const fileKey = decodeURIComponent(u.slice(contentsIdx + 10).split('?')[0]);
+      if (method === 'GET') {
+        giteeServer.lastGets.push(['contents', u]);
+        if (!giteeServer.files.has(fileKey)) return fakeGJson(404, { message: 'Not Found' });
+        return fakeGJson(200, { sha: 'sha-' + fileKey, content: giteeServer.files.get(fileKey) });
+      }
+      if (method === 'POST' || method === 'PUT') {
+        // 解析 form body（app.js 用 URLSearchParams 编码 access_token/content/message/sha）
+        const body = opts.body ? new URLSearchParams(opts.body) : new URLSearchParams();
+        giteeServer.lastWrites.push([method, fileKey, body.get('content'), body.get('message')]);
+        const exists = giteeServer.files.has(fileKey);
+        if (method === 'PUT' && !exists) return fakeGJson(422, { message: 'file not found, need POST first' });
+        if (method === 'POST' && exists) return fakeGJson(409, { message: 'already exists, need PUT with sha' });
+        if (method === 'PUT' && body.get('sha') !== 'sha-' + fileKey) return fakeGJson(400, { message: 'sha mismatch' });
+        giteeServer.files.set(fileKey, body.get('content'));
+        return fakeGJson(method === 'POST' ? 201 : 200, { content: { sha: 'sha-' + fileKey, content: body.get('content') } });
+      }
+    }
+    const rmatch = u.match(/\/api\/v5\/repos\/([^/]+)\/([^/?]+)/);
+    if (rmatch) {
+      if (rmatch[2] === 'ecocal-backup') return fakeGJson(200, { full_name: rmatch[1] + '/' + rmatch[2] });
+      return fakeGJson(404, { message: 'Not Found Project' });
+    }
+    return fakeGJson(404, { message: 'Not Found' });
+  } catch (e) { gThrew = e; throw e; }
+};
+
+// 7.5 测试连接：令牌校验（/user）+ 仓库存在性（/repos）
+try {
+  const who = await gb.testConnection();
+  assert(typeof who === 'string' && who.includes('myuser/ecocal-backup'), '测试连接：令牌 + 仓库确认（' + who + '）');
+  assert(giteeServer.lastGets.some(g => g[0] === 'user'), '测试连接调用了 /user');
+} catch (e) {
+  assert(false, '测试连接不应抛错（' + e.message + '）' + (gThrew ? '；fetch 异常：' + gThrew.message : ''));
+}
+gb.setToken('bad-token');
+giteeServer.userStatus = 401; // 让 /user 返回 401
+let connBad = null;
+try { await gb.testConnection(); } catch (e) { connBad = e; }
+assert(connBad !== null, '无效令牌时 testConnection 抛错');
+giteeServer.userStatus = null;
+gb.setToken('git-secret-token-123');
+EcoCal.state.settings.gitee.repo = 'nope';
+let repoBad = null;
+try { await gb.testConnection(); } catch (e) { repoBad = e; }
+assert(repoBad !== null, '仓库不存在时 testConnection 抛错');
+EcoCal.state.settings.gitee.repo = 'ecocal-backup';
+
+// 7.6 备份：首次 POST 新建（无 sha）→ 之后 PUT 更新（带 sha）
+const gRemoteKey = gb.path; // ecocal-backup.json
+giteeServer.lastWrites.length = 0;
+const gbk1 = await gb.backup();
+assert(typeof gbk1 === 'string' && gbk1.length > 0, 'backup() 返回备份文本');
+assert(giteeServer.files.has(gRemoteKey), 'Gitee 云端已写入备份文件');
+assert(giteeServer.lastWrites.length === 1 && giteeServer.lastWrites[0][0] === 'POST', '首次备份用 POST 新建文件');
+const decodeB64 = b64s => decodeURIComponent(escape(atob(String(b64s).replace(/\s+/g, ''))));
+let gRemoteObj = JSON.parse(decodeB64(giteeServer.files.get(gRemoteKey)));
+assert(gRemoteObj.app === 'EcoCal' && Array.isArray(gRemoteObj.assets) && gRemoteObj.assets.length > 0, 'Gitee 云端备份为 EcoCal 导出格式且含资产');
+giteeServer.lastWrites.length = 0;
+await gb.backup();
+assert(giteeServer.lastWrites.length === 1 && giteeServer.lastWrites[0][0] === 'PUT', '再次备份用 PUT 更新（带 sha）');
+assert(giteeServer.lastWrites[0][1] === gRemoteKey, 'PUT 目标是同一备份文件');
+assert(giteeServer.lastWrites[0][2] === giteeServer.files.get(gRemoteKey), 'PUT 内容已写入云端');
+
+// 7.7 fetchRemote 读取
+const gi = await gb.fetchRemote();
+assert(gi != null && gi.app === 'EcoCal' && Array.isArray(gi.assets) && gi.assets.length > 0, 'fetchRemote 读取 Gitee 云端备份成功');
+const cloudNameG = gi.assets[0].name;
+
+// 7.8 恢复流程（先确认，后应用）
+EcoCal.state.assets[0].name = '将被 Gitee 覆盖';
+const rrG = await EcoCal.manualGiteeRestore();
+assert(rrG === undefined, 'manualGiteeRestore 先弹出确认框');
+assert(elements['confirm-ok'].onclick != null, 'Gitee 恢复确认框已挂接确认回调');
+assert(EcoCal.state.assets[0].name === '将被 Gitee 覆盖', '确认前本地数据尚未被覆盖');
+elements['confirm-ok'].onclick();
+assert(EcoCal.state.assets[0].name === cloudNameG, '恢复后本地数据已从 Gitee 云端还原（' + cloudNameG + '）');
+
+// 7.9 自动备份节流：saveState 后 10s 内触发一次
+giteeServer.files.delete(gRemoteKey);
+EcoCal.state.assets[0].name = 'Gitee 自动备份测试';
+EcoCal.saveState();
+assert(!giteeServer.files.has(gRemoteKey), 'Gitee：saveState 后尚未立即上传（节流等待中）');
+await new Promise(r => setTimeout(r, 10500));
+assert(giteeServer.files.has(gRemoteKey), 'Gitee：节流 10s 后已上传');
+gRemoteObj = JSON.parse(decodeB64(giteeServer.files.get(gRemoteKey)));
+assert(gRemoteObj.assets[0].name === 'Gitee 自动备份测试', 'Gitee 自动备份内容为最新本地数据');
+EcoCal.state.assets[0].name = '测试资产';
+
+// 7.10 禁用后不再上传
+giteeServer.files.delete(gRemoteKey);
+EcoCal.state.settings.gitee.enabled = false;
+EcoCal.saveState();
+await new Promise(r => setTimeout(r, 300));
+assert(!giteeServer.files.has(gRemoteKey), 'Gitee：禁用自动备份后 saveState 不上传');
+EcoCal.state.settings.gitee.enabled = true;
+gb.setToken('');
+globalThis.fetch = origFetch2;
 
 /* ---- 汇总结果 ---- */
 console.log('\n结果：' + pass + ' 通过，' + fail + ' 失败');

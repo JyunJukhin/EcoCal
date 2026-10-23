@@ -7,7 +7,7 @@
  * ========================================================================= */
 'use strict';
 
-const CACHE_NAME = 'ecocal-shell-v8';
+const CACHE_NAME = 'ecocal-shell-v9';
 
 /* App Shell：首次安装时预缓存的应用骨架（新增页面依赖文件时需同步追加） */
 const APP_SHELL = [

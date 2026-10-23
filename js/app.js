@@ -15,9 +15,9 @@ const STORAGE_KEY = 'ecocal.data.v1';
 
 /* 应用版本：主版本.次版本.补丁
  * - 主版本：重大架构/功能（v3 多文件、v4 股票交易与行情、v6 交易记录全模式）
- * - 次版本：功能增强（v5 监察表模式与优化、v6.1 统计功能、v6.2 统计页重设计）
+ * - 次版本：功能增强（v5 监察表模式与优化、v6.1 统计功能、v6.2 统计页重设计、v6.4 云备份）
  * - 补丁：缺陷修复 */
-const APP_VERSION = '6.3.1';
+const APP_VERSION = '6.4.0';
 
 const CURRENCIES = {
   CNY: { symbol: '¥',  name: '人民币' },
@@ -208,11 +208,35 @@ const DEFAULT_SETTINGS = {
   riskFreeRate: 2,        // 无风险年化利率（%），用于夏普比率
   liabilities: 0,         // 负债总额（基准币种），净资产 = 总市值 − 负债
   singleAssetCap: 20,     // 单一标的上限阈值（%），超过则集中度高亮提示
+  // 云备份（WebDAV）：可选，配置后可把数据实时备份到 Web 端点
+  // 注意：应用密码不存这里（不进备份文件、不进导出），单独存 localStorage 'ecocal.webdav.pass'
+  webdav: {
+    enabled: false,       // 是否启用自动备份
+    url: '',              // WebDAV 端点（如 https://dav.jianguoyun.com/dav/）
+    user: '',             // 用户名/邮箱（坚果云为账号邮箱）
+    dir: 'EcoCal',        // 服务器上的备份目录（自动创建）
+    lastBackupAt: null,   // 最近一次备份成功时间
+    lastError: null,      // 最近一次失败原因（提示用）
+  },
+  // 云备份（Gitee 仓库）：可选，网页跨域直连 Gitee API（无需 Zotero UA 等门槛）
+  // 注意：私人令牌不存这里（不进备份文件、不进导出），单独存 localStorage 'ecocal.gitee.token'
+  gitee: {
+    enabled: false,       // 是否启用自动备份
+    owner: '',            // Gitee 用户名 / 组织名
+    repo: '',             // 私有仓库名（如 ecocal-backup）
+    path: 'ecocal-backup.json', // 仓库内备份文件路径（存储格式回到 .json）
+    lastBackupAt: null,   // 最近一次备份成功时间
+    lastError: null,      // 最近一次失败原因（提示用）
+  },
 };
 
 let state = { assets: [], valuations: [], trades: [], settings: Object.assign({}, DEFAULT_SETTINGS) };
 
-function saveState() { storageSet(state); }
+function saveState() {
+  storageSet(state);
+  queueWebdavBackup(); // 云备份（WebDAV）：启用后节流自动上传
+  queueGiteeBackup();  // 云备份（Gitee）：启用后节流自动上传（两套可同时配置，任一启用即上传）
+}
 
 function loadState() {
   const raw = storageGet();
@@ -2224,13 +2248,67 @@ function settingsHTML(settings) {
       '<div class="hint">集中度统计中，单一标的占比超过该比例时高亮提示。</div></div>' +
     '</div>' +
     '<div style="margin-top:24px;padding-top:14px;border-top:1px solid var(--line)">' +
+      '<div class="field" style="margin-bottom:8px"><label>云备份（WebDAV，可选）</label></div>' +
+      '<div class="hint" style="margin-bottom:10px">配置后可把数据<b>自动备份到 WebDAV 网盘</b>，防止清缓存/换设备丢数据。每次改动后自动上传（10 秒内合并），云端为单文件覆盖式，最多保留最近一份。</div>' +
+      '<div class="field" style="margin-bottom:8px"><label>WebDAV 地址</label>' +
+      '<input type="url" id="wd-url" placeholder="https://data.cstcloud.cn/dav/" value="' + esc(settings.webdav && settings.webdav.url || '') + '">' +
+      '<div class="hint">中国科技云·数据胶囊：https://data.cstcloud.cn/dav/；坚果云：dav.jianguoyun.com/dav/；需要「应用密码」而不是登录密码。部分服务（如 Zotero 专用 WebDAV）禁止新建目录，会自动改用其可写目录。</div></div>' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px 14px;margin-bottom:8px">' +
+        '<div class="field"><label>用户名 / 邮箱</label>' +
+        '<input type="text" id="wd-user" autocomplete="username" value="' + esc(settings.webdav && settings.webdav.user || '') + '"></div>' +
+        '<div class="field"><label>应用密码</label>' +
+        '<input type="password" id="wd-pass" autocomplete="new-password" placeholder="' + (webdavPwdSet() ? '（已保存，留空则不变）' : '') + '" value="">' +
+        '<div class="hint">不会出现在备份文件与导出内容里，仅存本机。</div></div>' +
+      '</div>' +
+      '<div class="field" style="margin-bottom:10px"><label>云端目录（自动创建）</label>' +
+      '<input type="text" id="wd-dir" value="' + esc(settings.webdav && settings.webdav.dir || 'EcoCal') + '" placeholder="EcoCal">' +
+      '<div class="hint">备份文件将保存在该目录下的 ecocal-backup.json。</div></div>' +
+      '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:6px">' +
+        '<button type="button" id="wd-test" class="btn btn-ghost btn-mini">🔌 测试连接</button>' +
+        '<button type="button" id="wd-backup" class="btn btn-primary btn-mini">⬆ 立即备份</button>' +
+        '<button type="button" id="wd-restore" class="btn btn-ghost btn-mini">⬇ 从云端恢复</button>' +
+        '<button type="button" id="wd-clear-pass" class="btn btn-ghost btn-mini" style="display:' + (webdavPwdSet() ? '' : 'none') + '">清除已存密码</button>' +
+      '</div>' +
+      '<div class="hint" id="wd-status" style="font-size:12px;margin-bottom:6px"></div>' +
+      '<label style="font-size:12px;color:var(--ink-2);display:inline-flex;gap:6px;align-items:center">' +
+        '<input type="checkbox" id="wd-enabled"' + (settings.webdav && settings.webdav.enabled ? ' checked' : '') + '> 启用自动备份（每次数据改动后自动上传）' +
+      '</label>' +
+    '</div>' +
+    '<div style="margin-top:24px;padding-top:14px;border-top:1px solid var(--line)">' +
+      '<div class="field" style="margin-bottom:8px"><label>云备份（Gitee 仓库，可选）</label></div>' +
+      '<div class="hint" style="margin-bottom:10px">配置后可把数据<b>自动备份到你的 Gitee 仓库</b>，防止清缓存/换设备丢数据。网页可直接跨域访问 Gitee API（无需额外客户端），每次改动后自动上传（10 秒内合并），云端为单文件覆盖式（存储格式 .json）。</div>' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px 14px;margin-bottom:8px">' +
+        '<div class="field"><label>Gitee 用户名 / 组织</label>' +
+        '<input type="text" id="g-owner" autocomplete="username" placeholder="如 yourname" value="' + esc(settings.gitee && settings.gitee.owner || '') + '"></div>' +
+        '<div class="field"><label>仓库名</label>' +
+        '<input type="text" id="g-repo" placeholder="如 ecocal-backup" value="' + esc(settings.gitee && settings.gitee.repo || '') + '">' +
+        '<div class="hint">建议使用<b>私有</b>仓库存放备份。</div></div>' +
+      '</div>' +
+      '<div class="field" style="margin-bottom:8px"><label>私人令牌（access_token）</label>' +
+      '<input type="password" id="g-token" autocomplete="new-password" placeholder="' + (giteeTokenSet() ? '（已保存，留空则不变）' : '') + '" value="">' +
+      '<div class="hint">在 gitee.com/profile/personal_access_tokens 生成，勾选 <b>projects</b> 读写权限；不会出现在备份文件与导出内容里，仅存本机。</div></div>' +
+      '<div class="field" style="margin-bottom:10px"><label>仓库内备份文件路径</label>' +
+      '<input type="text" id="g-path" value="' + esc(settings.gitee && settings.gitee.path || 'ecocal-backup.json') + '" placeholder="ecocal-backup.json">' +
+      '<div class="hint">默认 ecocal-backup.json，存于仓库根目录。</div></div>' +
+      '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:6px">' +
+        '<button type="button" id="g-test" class="btn btn-ghost btn-mini">🔌 测试连接</button>' +
+        '<button type="button" id="g-backup" class="btn btn-primary btn-mini">⬆ 立即备份</button>' +
+        '<button type="button" id="g-restore" class="btn btn-ghost btn-mini">⬇ 从云端恢复</button>' +
+        '<button type="button" id="g-clear-token" class="btn btn-ghost btn-mini" style="display:' + (giteeTokenSet() ? '' : 'none') + '">清除已存令牌</button>' +
+      '</div>' +
+      '<div class="hint" id="g-status" style="font-size:12px;margin-bottom:6px"></div>' +
+      '<label style="font-size:12px;color:var(--ink-2);display:inline-flex;gap:6px;align-items:center">' +
+        '<input type="checkbox" id="g-enabled"' + (settings.gitee && settings.gitee.enabled ? ' checked' : '') + '> 启用自动备份（每次数据改动后自动上传）' +
+      '</label>' +
+    '</div>' +
+    '<div style="margin-top:24px;padding-top:14px;border-top:1px solid var(--line)">' +
       '<div class="field" style="margin-bottom:8px"><label>数据管理</label></div>' +
       '<div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">' +
         '<button type="button" id="s-clear" class="btn btn-danger btn-mini">🗑 清空全部数据</button>' +
         '<span class="hint" style="font-size:12px;color:var(--ink-3)">删除所有产品、交易记录与汇率设置，不可恢复；建议先「导出」备份。</span>' +
       '</div>' +
     '</div>' +
-    '<div style="margin-top:16px;font-size:12px;color:var(--ink-3)">EcoCal v' + APP_VERSION + ' · 数据仅保存在本机浏览器（localStorage），不联网上传。</div>';
+    '<div style="margin-top:16px;font-size:12px;color:var(--ink-3)">EcoCal v' + APP_VERSION + ' · 数据默认仅保存在本机浏览器（localStorage）；可在上方配置「云备份」实时同步到 WebDAV 网盘或 Gitee 仓库（推荐 Gitee：国内直连、网页无门槛）。</div>';
 }
 
 function openSettings() {
@@ -2284,10 +2362,181 @@ function openSettings() {
   // 清空全部数据（危险操作，二次确认）
   $id('s-clear').onclick = clearAll;
 
+  /* ---- 云备份（WebDAV）面板 ---- */
+  const wdStatus = $id('wd-status');
+  const wdLast = () => {
+    const st = state.settings.webdav || {};
+    if (st.lastBackupAt) {
+      return '上次备份成功：' + new Date(st.lastBackupAt).toLocaleString() +
+        (st.lastError ? '；上次失败：' + st.lastError : '');
+    }
+    if (st.lastError) return '上次备份失败：' + st.lastError;
+    return '';
+  };
+  wdStatus.textContent = wdLast();
+
+  const readWebdavInputs = () => {
+    const st = state.settings.webdav || (state.settings.webdav = {});
+    st.url = $id('wd-url').value.trim();
+    st.user = $id('wd-user').value.trim();
+    st.dir = $id('wd-dir').value.trim() || 'EcoCal';
+  };
+  const savePassFromInput = () => {
+    const v = $id('wd-pass').value.trim();
+    if (v) webdavBackup.setPass(v);
+  };
+  const updatePassBtn = () => {
+    const btn = $id('wd-clear-pass');
+    if (btn) btn.style.display = webdavPwdSet() ? '' : 'none';
+  };
+
+  const wdBtnState = (disable) => {
+    ['wd-test', 'wd-backup', 'wd-restore'].forEach(id => {
+      const b = $id(id); if (b) b.disabled = disable;
+    });
+  };
+
+  $id('wd-test').onclick = async () => {
+    readWebdavInputs(); savePassFromInput();
+    wdStatus.textContent = '连接测试中…';
+    wdBtnState(true);
+    try {
+      await webdavBackup.testConnection();
+      wdStatus.textContent = '✓ 连接成功：凭据有效、目录可写。（浏览器跨域限制下若仍受 CORS 拦截，将在自动备份时提示）';
+    } catch (e) {
+      wdStatus.textContent = '✗ 连接失败：' + (e && e.message ? e.message : e) + '（若为 CORS/网络问题，网页可能无法直连网盘，可改用「导出」手动备份）';
+    }
+    wdBtnState(false); updatePassBtn();
+  };
+
+  $id('wd-backup').onclick = async () => {
+    readWebdavInputs(); savePassFromInput();
+    wdStatus.textContent = '上传中…';
+    wdBtnState(true);
+    const r = await manualWebdavBackup();
+    wdStatus.textContent = r.ok
+      ? '✓ 已备份成功（' + (r.size / 1024).toFixed(1) + ' KB）' + wdLast()
+      : '✗ 备份失败：' + r.error + '（若为 CORS/网络问题，网页可能无法直连网盘，可改用「导出」手动备份）';
+    wdBtnState(false); updatePassBtn();
+  };
+
+  $id('wd-restore').onclick = async () => {
+    readWebdavInputs(); savePassFromInput();
+    try {
+      await manualWebdavRestore();
+    } catch (e) {
+      wdStatus.textContent = '✗ 恢复失败：' + (e && e.message ? e.message : e);
+    }
+    updatePassBtn();
+  };
+
+  $id('wd-clear-pass').onclick = () => {
+    webdavBackup.setPass('');
+    $id('wd-pass').value = '';
+    updatePassBtn();
+    wdStatus.textContent = '已清除保存的应用密码。';
+  };
+
+  const wdEnabled = $id('wd-enabled');
+  wdEnabled.onchange = () => {
+    state.settings.webdav = state.settings.webdav || {};
+    state.settings.webdav.enabled = wdEnabled.checked;
+    // 启用自动备份时读取当前输入（测试连接/备份时会读取；此处避免未配置就上传）
+    if (wdEnabled.checked) { readWebdavInputs(); savePassFromInput(); }
+    saveState();
+  };
+
+  /* ---- 云备份（Gitee 仓库）面板 ---- */
+  const gStatus = $id('g-status');
+  const gLast = () => {
+    const st = state.settings.gitee || {};
+    if (st.lastBackupAt) {
+      return '上次备份成功：' + new Date(st.lastBackupAt).toLocaleString() +
+        (st.lastError ? '；上次失败：' + st.lastError : '');
+    }
+    if (st.lastError) return '上次备份失败：' + st.lastError;
+    return '';
+  };
+  gStatus.textContent = gLast();
+
+  const readGiteeInputs = () => {
+    const st = state.settings.gitee || (state.settings.gitee = {});
+    st.owner = $id('g-owner').value.trim();
+    st.repo = $id('g-repo').value.trim();
+    st.path = $id('g-path').value.trim() || 'ecocal-backup.json';
+  };
+  const saveTokenFromInput = () => {
+    const v = $id('g-token').value.trim();
+    if (v) giteeBackup.setToken(v);
+  };
+  const updateTokenBtn = () => {
+    const btn = $id('g-clear-token');
+    if (btn) btn.style.display = giteeTokenSet() ? '' : 'none';
+  };
+
+  const gBtnState = (disable) => {
+    ['g-test', 'g-backup', 'g-restore'].forEach(id => {
+      const b = $id(id); if (b) b.disabled = disable;
+    });
+  };
+
+  $id('g-test').onclick = async () => {
+    readGiteeInputs(); saveTokenFromInput();
+    gStatus.textContent = '连接测试中…';
+    gBtnState(true);
+    try {
+      const info = await giteeBackup.testConnection();
+      gStatus.textContent = '✓ 连接成功：' + (info || '凭据有效、仓库可写。');
+    } catch (e) {
+      gStatus.textContent = '✗ 连接失败：' + (e && e.message ? e.message : e);
+    }
+    gBtnState(false); updateTokenBtn();
+  };
+
+  $id('g-backup').onclick = async () => {
+    readGiteeInputs(); saveTokenFromInput();
+    gStatus.textContent = '上传中…';
+    gBtnState(true);
+    const r = await manualGiteeBackup();
+    gStatus.textContent = r.ok
+      ? '✓ 已备份成功（' + (r.size / 1024).toFixed(1) + ' KB）' + gLast()
+      : '✗ 备份失败：' + r.error;
+    gBtnState(false); updateTokenBtn();
+  };
+
+  $id('g-restore').onclick = async () => {
+    readGiteeInputs(); saveTokenFromInput();
+    try {
+      await manualGiteeRestore();
+    } catch (e) {
+      gStatus.textContent = '✗ 恢复失败：' + (e && e.message ? e.message : e);
+    }
+    updateTokenBtn();
+  };
+
+  $id('g-clear-token').onclick = () => {
+    giteeBackup.setToken('');
+    $id('g-token').value = '';
+    updateTokenBtn();
+    gStatus.textContent = '已清除保存的私人令牌。';
+  };
+
+  const gEnabled = $id('g-enabled');
+  gEnabled.onchange = () => {
+    state.settings.gitee = state.settings.gitee || {};
+    state.settings.gitee.enabled = gEnabled.checked;
+    if (gEnabled.checked) { readGiteeInputs(); saveTokenFromInput(); }
+    saveState();
+  };
+
   modalOnOk = () => {
     const base = $id('s-base').value;
     const oldBase = state.settings.baseCurrency;
     const oldRates = Object.assign({}, state.settings.rates);
+
+    // 云备份面板输入回写（url/user/dir/pass + gitee owner/repo/path/token；enabled 已由 onchange 即时保存）
+    readWebdavInputs(); savePassFromInput();
+    readGiteeInputs(); saveTokenFromInput();
 
     // 收集面板输入（面板只显示非基准币种，其余币种沿用旧汇率）
     const collected = {};
@@ -2342,6 +2591,475 @@ function openSettings() {
     }
     saveState(); renderAll(); closeModal();
   };
+}
+
+/* ---------------- 云备份（WebDAV） ---------------- */
+/** 是否已保存过应用密码（供设置面板显示「清除密码」按钮） */
+function webdavPwdSet() { return !!webdavBackup.getPass(); }
+/**
+ * 云备份后端：把数据实时备份到支持 WebDAV 的网盘（如坚果云）。
+ * 每次有改动（saveState）后节流上传；也可在设置面板手动备份/恢复。
+ * 注：网页跨域写 WebDAV 受浏览器 CORS 限制，坚果云实测不返回 CORS 头，
+ * 若被浏览器拦截，会提示并引导使用「导出 + 手动保存」兜底。
+ */
+const webdavBackup = {
+  // 应用密码独立存储：不进 state（避免出现在备份/导出内容中）
+  getPass() {
+    try { return window.localStorage.getItem('ecocal.webdav.pass') || ''; } catch (e) { return ''; }
+  },
+  setPass(v) {
+    try {
+      if (v) window.localStorage.setItem('ecocal.webdav.pass', v);
+      else window.localStorage.removeItem('ecocal.webdav.pass');
+    } catch (e) { /* 隐私模式等场景忽略 */ }
+  },
+
+  // 当前 WebDAV 基础配置（从 settings 读取，避免每次传参）
+  get cfg() {
+    const c = state.settings.webdav || {};
+    return { ...c, pass: this.getPass() };
+  },
+
+  // 规范化目录：去首尾空白与斜杠、防穿越、防非法字符
+  normDir(dir) {
+    let d = String(dir == null ? '' : dir).trim()
+      .replace(/\\/g, '/')
+      .replace(/^\/+|\/+$/g, '')
+      .split('/').filter(s => s !== '' && s !== '.' && s !== '..')
+      .join('/');
+    return d;
+  },
+
+  /** 远程文件完整路径（如 EcoCal/ecocal-backup.json） */
+  remotePath() {
+    const dir = this.normDir(this.cfg.dir);
+    // 注：默认扩展名是 .json（EcoCal 备份标准格式）。部分 WebDAV 服务（如中国科技云·数据胶囊
+    // Zotero 专用端点）只放行 Zotero 附件格式（.zip）；如需兼容可自行在目录里建 .zip 文件名，
+    // 但标准备份文件名保持 ecocal-backup.json，与本机导出格式一致。
+    return (dir ? dir + '/' : '') + 'ecocal-backup.json';
+  },
+  /** 基础配置校验；返回错误信息或 null */
+  validate() {
+    const c = this.cfg;
+    if (!c.url) return '未填写 WebDAV 地址';
+    if (!c.user || !c.pass) return '未填写 WebDAV 用户名与应用密码';
+    const m = /^https?:\/\/([^/?#]+)/i.exec(String(c.url).trim());
+    if (!m) return 'WebDAV 地址必须以 http(s):// 开头';
+    const host = m[1].split('@').pop().split(':')[0]; // 去 userinfo 与端口
+    if (!host || host.indexOf('.') < 0) return 'WebDAV 地址缺少有效主机名';
+    return null;
+  },
+
+  /** Basic 认证头 */
+  authHeader() {
+    const c = this.cfg;
+    return 'Basic ' + btoa(unescape(encodeURIComponent(c.user + ':' + c.pass)));
+  },
+
+  /** 统一超时（毫秒） */
+  _timeout: 15000,
+
+  /**
+   * 发送 WebDAV 请求（fetch）。
+   * method: PROPFIND/PUT/GET/MKCOL/DELETE 等
+   */
+  async request(method, path, body, headers) {
+    const cfg = this.cfg;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), this._timeout);
+    const h = Object.assign({
+      Authorization: this.authHeader(),
+      // Zotero 兼容 User-Agent：中国科技云·数据胶囊等 Zotero 专用 WebDAV 端点
+      // 会检查 UA 里是否含 "Zotero/"（否则 403 "Client type mismatch"）。浏览器
+      // 允许自定义该请求头，仅用于 WebDAV 请求，不影响页面其它 fetch。
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36 Zotero/7.0.18',
+    }, headers || {});
+    const opts = {
+      method,
+      headers: h,
+      signal: ctrl.signal,
+    };
+    if (body != null) opts.body = body;
+    if (method === 'PROPFIND') opts.headers.Depth = '1';
+    try {
+      const resp = await fetch(cfg.url.replace(/\/+$/, '') + (path ? '/' + path.replace(/^\/+/, '') : ''), opts);
+      return resp;
+    } finally {
+      clearTimeout(timer);
+    }
+  },
+
+  /** PUT 上传数据（覆盖式） */
+  async put(text) {
+    const resp = await this.request('PUT', this.remotePath(), text, {
+      'Content-Type': 'application/json; charset=utf-8',
+    });
+    if (resp.status === 201 || resp.status === 204 || resp.status === 200) return true;
+    throw new Error('上传失败（HTTP ' + resp.status + '）' + (resp.status === 401 ? '：用户名或应用密码不正确' : ''));
+  },
+
+  /** GET 下载数据；404 → null */
+  async get() {
+    const resp = await this.request('GET', this.remotePath());
+    if (resp.status === 404) return null;
+    if (resp.status !== 200) throw new Error('下载失败（HTTP ' + resp.status + '）');
+    return resp.text();
+  },
+
+  /**
+   * 确保目录存在（递归 MKCOL，宽容模式）。
+   * 不同 WebDAV 服务对「目录已存在 / 不允许建目录」的响应五花八门：
+   *   201 = 新建成功；204/200 = 幂等成功；405/409/412 = 已存在或结构冲突；
+   *   403 = 服务端禁止创建集合（如 Zotero 专用 WebDAV 只允许在既有目录内写文件）；
+   *   301/302 = 部分服务器目录尾斜杠跳转。
+   * 这些都不影响后续「按路径直接 PUT 文件」的能力，一律放行；
+   * 真正的写权限由 testConnection 的探针 PUT/DELETE 判定。
+   */
+  async ensureDir(dir) {
+    if (!dir) return;
+    const parts = dir.split('/');
+    let cur = '';
+    for (const part of parts) {
+      cur = cur ? cur + '/' + part : part;
+      const resp = await this.request('MKCOL', cur);
+      const s = resp.status;
+      if (s !== 201 && s !== 204 && s !== 200 && s !== 301 && s !== 302
+          && s !== 405 && s !== 409 && s !== 412 && s !== 403) {
+        throw new Error('创建目录失败（HTTP ' + s + '）');
+      }
+    }
+  },
+
+  /** 验证连接与凭据：目录可容错创建，随后以「探针 PUT/DELETE」判定真实写权限 */
+  async testConnection() {
+    const err = this.validate();
+    if (err) throw new Error(err);
+    const dir = this.normDir(this.cfg.dir);
+    if (dir) {
+      // 目录创建失败（403/405 等）不阻断：写权限最终由探针 PUT 判定
+      try { await this.ensureDir(dir); } catch (e) { /* 忽略：交给探针验证 */ }
+    }
+    // 探针：先按配置目录，失败则回退根路径（Zotero 类 WebDAV 常只开放根写入）
+    const tryProbe = async (probePath) => {
+      const putResp = await this.request('PUT', probePath, 'ok');
+      if (putResp.status !== 201 && putResp.status !== 204 && putResp.status !== 200) return false;
+      await this.request('DELETE', probePath);
+      return true;
+    };
+    const probePath = this.remotePath().replace(/ecocal-backup\.json$/, '.ecocal-probe');
+    if (await tryProbe(probePath)) return true;
+    if (probePath !== '.ecocal-probe' && await tryProbe('.ecocal-probe')) {      // 配置目录不可写、根可写：自动将云端目录改为根，保证后续备份/恢复走同一可写路径
+      state.settings.webdav.dir = '';
+      saveState();
+      return true;
+    }
+    throw new Error('写测试失败（HTTP 403/405）：配置目录与 WebDAV 根路径均不可写，请检查账号权限或换一个可写目录');
+  },
+
+  /** 全量备份：生成 payload 并 PUT（覆盖式） */
+  async backup() {
+    await this.testConnection();
+    const text = buildExportPayload();
+    await this.put(text);
+    return text;
+  },
+
+  /** 恢复：下载云端数据 → 校验 → 返回解析后的数据（不自动应用） */
+  async fetchRemote() {
+    const err = this.validate();
+    if (err) throw new Error(err);
+    const text = await this.get();
+    if (text == null || !text.trim()) throw new Error('云端还没有备份文件（可先点「立即备份」）。');
+    let data;
+    try { data = JSON.parse(text); } catch (e) { throw new Error('云端备份内容不是有效 JSON：' + e.message); }
+    if (!data || !data.app || !Array.isArray(data.assets) || !Array.isArray(data.valuations)) {
+      throw new Error('云端备份内容不是有效的 EcoCal 备份（缺少 app/assets/valuations）。');
+    }
+    return data;
+  },
+};
+
+/** 自动备份节流：saveState 改动后延迟执行（防频繁弹上传） */
+let webdavAutoPending = null; // { text, timer }
+const WEBDAV_AUTO_DELAY = 10000; // 10 秒
+function queueWebdavBackup() {
+  const cfg = state.settings.webdav || {};
+  if (!cfg.enabled) return;
+  const err = webdavBackup.validate();
+  if (err) return; // 未配置完整时静默跳过
+  if (webdavAutoPending) clearTimeout(webdavAutoPending.timer);
+  webdavAutoPending = {
+    text: buildExportPayload(),
+    timer: setTimeout(() => {
+      webdavAutoPending = null;
+      webdavBackup.backup()
+        .then(() => {
+          state.settings.webdav.lastBackupAt = new Date().toISOString();
+          state.settings.webdav.lastError = null;
+          // 后台状态更新不触发再次备份
+          const raw = window.localStorage.getItem(STORAGE_KEY);
+          try { if (raw) { const d = JSON.parse(raw); if (d && d.settings && d.settings.webdav) { d.settings.webdav.lastBackupAt = state.settings.webdav.lastBackupAt; d.settings.webdav.lastError = null; window.localStorage.setItem(STORAGE_KEY, JSON.stringify(d)); } } } catch (e) { /* 忽略 */ }
+        })
+        .catch(err2 => {
+          state.settings.webdav.lastError = String(err2 && err2.message ? err2.message : err2);
+          const raw = window.localStorage.getItem(STORAGE_KEY);
+          try { if (raw) { const d = JSON.parse(raw); if (d && d.settings && d.settings.webdav) { d.settings.webdav.lastError = state.settings.webdav.lastError; window.localStorage.setItem(STORAGE_KEY, JSON.stringify(d)); } } } catch (e) { /* 忽略 */ }
+        });
+    }, WEBDAV_AUTO_DELAY),
+  };
+}
+
+/** 立即备份（面板按钮用，返回是否成功） */
+async function manualWebdavBackup() {
+  try {
+    const text = await webdavBackup.backup();
+    state.settings.webdav.lastBackupAt = new Date().toISOString();
+    state.settings.webdav.lastError = null;
+    saveState(); // 持久化备份时间
+    return { ok: true, size: text.length };
+  } catch (e) {
+    state.settings.webdav.lastError = String(e && e.message ? e.message : e);
+    saveState();
+    return { ok: false, error: state.settings.webdav.lastError };
+  }
+}
+
+/** 恢复：下载云端 → 覆盖本地（恢复前先自动快照本地数据防误覆盖） */
+async function manualWebdavRestore() {
+  const data = await webdavBackup.fetchRemote(); // 失败直接抛给调用方
+  closeModal();
+  const snapshot = buildExportPayload();
+  confirmAction('从云端恢复',
+    '将从云端备份恢复数据并<b>覆盖当前全部本地数据</b>。' +
+    '恢复前会自动把当前数据以「导出」文件形式下载一份到本机，如需撤销可重新导入该文件。确定继续吗？',
+    () => {
+      try { downloadJSON(snapshot); } catch (e) { /* 快照下载失败不阻断恢复 */ }
+      applyPayload(data);
+      renderAll();
+      alert('已从云端恢复成功。');
+    }, '恢复');
+}
+
+/* ---------------- 云备份（Gitee 仓库） ---------------- */
+/** 是否已保存过私人令牌（供设置面板显示「清除令牌」按钮） */
+function giteeTokenSet() { return !!giteeBackup.getToken(); }
+/**
+ * 云备份后端：把数据实时备份到 Gitee 仓库（contents API）。
+ * Gitee API 实测（2026-10）：/api/v5/* 预检 200、Access-Control-Allow-Origin:*、
+ * Allow-Methods 含 PUT/POST/DELETE、Allow-Headers 含 authorization → 网页跨域直连可行，
+ * 无 Zotero 等 UA 门槛。国内 gitee.com 直连快（实测 254–403ms）。
+ * 每次有改动（saveState）后节流上传；也可在设置面板手动备份/恢复。
+ *
+ * 思路：私有仓库内保存单文件 ecocal-backup.json（UTF-8 JSON 文本，base64 编码后
+ * 通过 contents API 提交）。首次 POST 新建，之后 GET 读回 sha → PUT 更新（覆盖式）。
+ */
+const giteeBackup = {
+  /** 私人令牌独立存储：不进 state（避免出现在备份/导出内容中） */
+  getToken() {
+    try { return window.localStorage.getItem('ecocal.gitee.token') || ''; } catch (e) { return ''; }
+  },
+  setToken(v) {
+    try {
+      if (v) window.localStorage.setItem('ecocal.gitee.token', v);
+      else window.localStorage.removeItem('ecocal.gitee.token');
+    } catch (e) { /* 隐私模式等场景忽略 */ }
+  },
+
+  /** 当前 Gitee 配置（从 settings 读取，令牌单独合并） */
+  get cfg() {
+    const c = state.settings.gitee || {};
+    return { ...c, token: this.getToken() };
+  },
+
+  /** 仓库内文件路径（默认根目录 ecocal-backup.json，存储格式回到 .json） */
+  get path() {
+    const p = String(this.cfg.path || '').trim().replace(/^\/+/, '');
+    return p || 'ecocal-backup.json';
+  },
+  /** 基础配置校验；返回错误信息或 null */
+  validate() {
+    const c = this.cfg;
+    if (!c.owner) return '未填写 Gitee 用户名 / 组织';
+    if (!c.repo) return '未填写 Gitee 仓库名';
+    if (/[^A-Za-z0-9_.-]/.test(c.owner) || /[^A-Za-z0-9_.-]/.test(c.repo)) return '用户名 / 仓库名只能包含字母、数字、点、下划线、连字符';
+    if (!c.token) return '未填写 Gitee 私人令牌';
+    return null;
+  },
+
+  /** 统一超时（毫秒），Gitee API 国内直连一般 <1s */
+  _timeout: 15000,
+
+  /** 发送 Gitee API 请求（fetch）；bodyObj → form body，queryObj → URL query */
+  async api(path, method, bodyObj, queryObj) {
+    const cfg = this.cfg;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), this._timeout);
+    const build = (obj) => {
+      const f = new URLSearchParams();
+      if (obj) Object.keys(obj).forEach(k => { if (obj[k] != null) f.set(k, obj[k]); });
+      return f.toString(); // 无 '?' 前缀
+    };
+    const bodyStr = build(bodyObj);
+    const queryStr = build(queryObj);
+    const opts = {
+      method: method || 'GET',
+      headers: { Accept: 'application/json' },
+      signal: ctrl.signal,
+    };
+    if (method && method !== 'GET' && bodyObj) {
+      opts.headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8';
+      opts.body = bodyStr; // Gitee 用 form 传参（access_token 等）
+    }
+    try {
+      const url = 'https://gitee.com/api/v5' + path + (queryStr ? '?' + queryStr : '');
+      const resp = await fetch(url, opts);
+      let text = '';
+      try { text = await resp.text(); } catch (e) { /* 无 body */ }
+      let data = null;
+      try { data = text ? JSON.parse(text) : null; } catch (e) { /* 非 JSON */ }
+      return { ok: resp.status >= 200 && resp.status < 300, status: resp.status, data, text };
+    } finally {
+      clearTimeout(timer);
+    }
+  },
+
+  /** GET 当前文件信息：{ sha, content } / null（不存在）；404 → null */
+  async fetchMeta() {
+    const c = this.cfg;
+    const r = await this.api('/repos/' + encodeURIComponent(c.owner) + '/' + encodeURIComponent(c.repo) +
+      '/contents/' + encodeURIComponent(this.path).replace(/%2F/g, '/'), 'GET', null, { access_token: c.token });
+    if (r.status === 404) return null;
+    if (!r.ok) throw new Error(r.data && r.data.message ? r.data.message : ('读取仓库文件失败（HTTP ' + r.status + '）'));
+    return r.data || null;
+  },
+
+  /** 保存全量 JSON 文本到仓库（存在则 PUT 更新，否则 POST 新建） */
+  async saveText(text) {
+    const c = this.cfg;
+    const content = btoa(unescape(encodeURIComponent(text))); // UTF-8 → base64（Gitee 要求 base64 内容）
+    const meta = await this.fetchMeta();
+    const body = { access_token: c.token, content, message: 'EcoCal 云备份' };
+    let r;
+    if (meta && meta.sha) {
+      body.sha = meta.sha;
+      r = await this.api('/repos/' + encodeURIComponent(c.owner) + '/' + encodeURIComponent(c.repo) +
+        '/contents/' + encodeURIComponent(this.path).replace(/%2F/g, '/'), 'PUT', body);
+    } else {
+      r = await this.api('/repos/' + encodeURIComponent(c.owner) + '/' + encodeURIComponent(c.repo) +
+        '/contents/' + encodeURIComponent(this.path).replace(/%2F/g, '/'), 'POST', body);
+    }
+    if (!r.ok || !r.data || !r.data.content) {
+      throw new Error('上传失败：' + (r.data && r.data.message ? r.data.message : ('HTTP ' + r.status)));
+    }
+    return true;
+  },
+
+  /** GET 读回并解析（返回 JSON 数据或 null） */
+  async fetchRemote() {
+    const meta = await this.fetchMeta();
+    if (!meta) throw new Error('云端还没有备份文件（可先点「立即备份」）。');
+    if (!meta.content) throw new Error('云端备份内容为空。');
+    let text = '';
+    try {
+      // Gitee 返回 base64 的 content（可能含 \n 换行）
+      const b64 = String(meta.content).replace(/\s+/g, '');
+      text = decodeURIComponent(escape(atob(b64)));
+    } catch (e) {
+      throw new Error('云端备份不是有效 base64：' + e.message);
+    }
+    let data;
+    try { data = JSON.parse(text); } catch (e) { throw new Error('云端备份内容不是有效 JSON：' + e.message); }
+    if (!data || !data.app || !Array.isArray(data.assets) || !Array.isArray(data.valuations)) {
+      throw new Error('云端备份内容不是有效的 EcoCal 备份（缺少 app/assets/valuations）。');
+    }
+    return data;
+  },
+
+  /** 测试连接：校验令牌 + 确认仓库可读（顺带确认仓库存在） */
+  async testConnection() {
+    const err = this.validate();
+    if (err) throw new Error(err);
+    const c = this.cfg;
+    // 1) 用户身份（令牌有效）
+    const u = await this.api('/user', 'GET', null, { access_token: c.token });
+    if (!u.ok) throw new Error('令牌无效或被拒绝：' + (u.data && u.data.message ? u.data.message : ('HTTP ' + u.status)));
+    // 2) 仓库存在性（GET contents 或仓库详情）
+    const repo = await this.api('/repos/' + encodeURIComponent(c.owner) + '/' + encodeURIComponent(c.repo), 'GET', null, { access_token: c.token });
+    if (!repo.ok || !repo.data) {
+      throw new Error('仓库不存在或无权访问：' + (repo.data && repo.data.message ? repo.data.message : ('HTTP ' + repo.status)));
+    }
+    return (u.data && u.data.name ? u.data.name : u.data && u.data.login) + ' → ' + c.owner + '/' + c.repo;
+  },
+
+  /** 全量备份：生成 payload 并保存到仓库（覆盖式） */
+  async backup() {
+    const err = this.validate();
+    if (err) throw new Error(err);
+    const text = buildExportPayload();
+    await this.saveText(text);
+    return text;
+  },
+};
+
+/** 自动备份节流：saveState 改动后延迟执行（防频繁弹上传） */
+let giteeAutoPending = null; // { text, timer }
+const GITEE_AUTO_DELAY = 10000; // 10 秒
+function queueGiteeBackup() {
+  const cfg = state.settings.gitee || {};
+  if (!cfg.enabled) return;
+  const err = giteeBackup.validate();
+  if (err) return; // 未配置完整时静默跳过
+  if (giteeAutoPending) clearTimeout(giteeAutoPending.timer);
+  giteeAutoPending = {
+    text: buildExportPayload(),
+    timer: setTimeout(() => {
+      giteeAutoPending = null;
+      giteeBackup.backup()
+        .then(() => {
+          state.settings.gitee.lastBackupAt = new Date().toISOString();
+          state.settings.gitee.lastError = null;
+          // 后台状态更新不触发再次备份
+          const raw = window.localStorage.getItem(STORAGE_KEY);
+          try { if (raw) { const d = JSON.parse(raw); if (d && d.settings && d.settings.gitee) { d.settings.gitee.lastBackupAt = state.settings.gitee.lastBackupAt; d.settings.gitee.lastError = null; window.localStorage.setItem(STORAGE_KEY, JSON.stringify(d)); } } } catch (e) { /* 忽略 */ }
+        })
+        .catch(err2 => {
+          state.settings.gitee.lastError = String(err2 && err2.message ? err2.message : err2);
+          const raw = window.localStorage.getItem(STORAGE_KEY);
+          try { if (raw) { const d = JSON.parse(raw); if (d && d.settings && d.settings.gitee) { d.settings.gitee.lastError = state.settings.gitee.lastError; window.localStorage.setItem(STORAGE_KEY, JSON.stringify(d)); } } } catch (e) { /* 忽略 */ }
+        });
+    }, GITEE_AUTO_DELAY),
+  };
+}
+
+/** 立即备份（面板按钮用，返回是否成功） */
+async function manualGiteeBackup() {
+  try {
+    const text = await giteeBackup.backup();
+    state.settings.gitee.lastBackupAt = new Date().toISOString();
+    state.settings.gitee.lastError = null;
+    saveState(); // 持久化备份时间
+    return { ok: true, size: text.length };
+  } catch (e) {
+    state.settings.gitee.lastError = String(e && e.message ? e.message : e);
+    saveState();
+    return { ok: false, error: state.settings.gitee.lastError };
+  }
+}
+
+/** 恢复：下载云端 → 覆盖本地（恢复前先自动快照本地数据防误覆盖） */
+async function manualGiteeRestore() {
+  const data = await giteeBackup.fetchRemote(); // 失败直接抛给调用方
+  closeModal();
+  const snapshot = buildExportPayload();
+  confirmAction('从云端恢复',
+    '将从 Gitee 仓库备份恢复数据并<b>覆盖当前全部本地数据</b>。' +
+    '恢复前会自动把当前数据以「导出」文件形式下载一份到本机，如需撤销可重新导入该文件。确定继续吗？',
+    () => {
+      try { downloadJSON(snapshot); } catch (e) { /* 快照下载失败不阻断恢复 */ }
+      applyPayload(data);
+      renderAll();
+      alert('已从云端恢复成功。');
+    }, '恢复');
 }
 
 /* ---------------- 导出 / 导入（手机友好：剪贴板 + 粘贴） ---------------- */
@@ -2791,6 +3509,8 @@ window.__EcoCal = {
   migrateToTrades, migrateToV6, fxRateFromCache, daysAgoStr,
   normalizeSymbol, symbolToCurrency, fetchQuote, fetchKline, fetchStockInfo,
   refreshQuoteForAsset, refreshAllQuotes, manualPriceline,
+  webdavBackup, queueWebdavBackup, manualWebdavBackup, manualWebdavRestore,
+  giteeBackup, queueGiteeBackup, manualGiteeBackup, manualGiteeRestore,
 };
 
 })();
