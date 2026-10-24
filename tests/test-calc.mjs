@@ -754,17 +754,34 @@ assert(putFail !== null, 'PUT 被拒（409）时 backup() 抛错');
 wdServer.status = 201;
 assert(wdServer.lastAuth != null && String(wdServer.lastAuth).startsWith('Basic '), 'WebDAV 请求带 Basic 认证头');
 
-// 6.4.3 自动备份节流：saveState() 后 10 秒内应触发一次 PUT
+// 6.4.3 自动备份节流：saveState() 后不立即上传；防抖窗口内（改后不久）不重复上传；
+//      窗口结束后（60s 尾部防抖）才上传一次，且把整个窗口的改动合并成一次
 wdServer.stores.delete(keyFull);
 EcoCal.state.assets[0].name = '自动备份覆盖测试';
 EcoCal.saveState();
-assert(!wdServer.stores.has(keyFull), 'saveState 后尚未立即上传（节流等待中）');
+assert(!wdServer.stores.has(keyFull), 'saveState 后尚未立即上传（防抖等待中）');
 await new Promise(r => setTimeout(r, 300));
-assert(!wdServer.stores.has(keyFull), '节流窗口内（10s 前）不重复上传');
-await new Promise(r => setTimeout(r, 10500));
-assert(wdServer.stores.has(keyFull), '自动备份已上传最新数据（节流 10s 后）');
+assert(!wdServer.stores.has(keyFull), '防抖窗口内（60s 前）不重复上传');
+// 窗口内再次改动应重置计时：约 40s 后再改一次，60s 前仍不应上传
+await new Promise(r => setTimeout(r, 40000));
+EcoCal.state.assets[0].name = '自动备份合并测试';
+EcoCal.saveState();
+await new Promise(r => setTimeout(r, 300)); // 重置后仍在防抖窗口内
+assert(!wdServer.stores.has(keyFull), '窗口内再次改动重置计时，仍不立即上传');
+await new Promise(r => setTimeout(r, 60500));
+assert(wdServer.stores.has(keyFull), '停止改动 60s 后自动备份已上传（合并了窗口内所有改动）');
 const autoStored = JSON.parse(wdServer.stores.get(keyFull));
-assert(autoStored.assets[0].name === '自动备份覆盖测试', '自动备份内容为最新本地数据');
+assert(autoStored.assets[0].name === '自动备份合并测试', '自动备份内容为最新本地数据（合并后只传一次）');
+assert(autoStored.settings !== undefined, '自动备份含 settings');
+// 精简载荷：云备份不含汇率/行情缓存等可重取部分
+assert(autoStored.settings.rates === undefined, '云备份载荷不含汇率表（settings.rates）');
+assert(autoStored.settings.quotes === undefined && autoStored.settings.kline === undefined, '云备份载荷不含行情缓存（quotes/kline）');
+assert(autoStored.settings.ratesUpdatedAt === undefined && autoStored.settings.autoQuote === undefined, '云备份载荷不含行情相关设置（ratesUpdatedAt/autoQuote）');
+assert(autoStored.settings.webdav !== undefined, '云备份仍保留 WebDAV 配置');
+assert(autoStored.settings.webdav.lastBackupAt === undefined && autoStored.settings.webdav.lastError === undefined, '云备份不回传备份历史（lastBackupAt/lastError）');
+// 云备份与导出的 payload 应一致地不含秘密（导出仍含汇率，属于完整备份）
+const exportPayload = JSON.parse(EcoCal.buildExportPayload());
+assert(exportPayload.settings.rates !== undefined, '导出载荷保留汇率表（与云备份精简不同）');
 EcoCal.state.assets[0].name = '测试资产';
 
 // 6.4.4 读取远端 / 恢复流程（fetchRemote + manualWebdavRestore 还原本地）
@@ -922,15 +939,29 @@ assert(EcoCal.state.assets[0].name === '将被 Gitee 覆盖', '确认前本地�
 elements['confirm-ok'].onclick();
 assert(EcoCal.state.assets[0].name === cloudNameG, '恢复后本地数据已从 Gitee 云端还原（' + cloudNameG + '）');
 
-// 7.9 自动备份节流：saveState 后 10s 内触发一次
+// 7.9 自动备份节流：saveState 后 60s（尾部防抖）内触发一次；切后台立即同步
 giteeServer.files.delete(gRemoteKey);
 EcoCal.state.assets[0].name = 'Gitee 自动备份测试';
 EcoCal.saveState();
-assert(!giteeServer.files.has(gRemoteKey), 'Gitee：saveState 后尚未立即上传（节流等待中）');
-await new Promise(r => setTimeout(r, 10500));
-assert(giteeServer.files.has(gRemoteKey), 'Gitee：节流 10s 后已上传');
-gRemoteObj = JSON.parse(decodeB64(giteeServer.files.get(gRemoteKey)));
-assert(gRemoteObj.assets[0].name === 'Gitee 自动备份测试', 'Gitee 自动备份内容为最新本地数据');
+assert(!giteeServer.files.has(gRemoteKey), 'Gitee：saveState 后尚未立即上传（防抖等待中）');
+await new Promise(r => setTimeout(r, 300));
+assert(!giteeServer.files.has(gRemoteKey), 'Gitee：防抖窗口内（60s 前）不重复上传');
+// 切后台（visibilitychange）立即同步剩余改动
+await new Promise(r => setTimeout(r, 1000));
+giteeServer.files.delete(gRemoteKey);
+EcoCal.state.assets[0].name = 'Gitee 后台同步测试';
+EcoCal.saveState(); // 在防抖窗口内登记
+EcoCal.gateFlush(); // 模拟 visibilitychange → pagehide → 立即上传
+await new Promise(r => setTimeout(r, 100)); // 等待异步上传完成
+assert(giteeServer.files.has(gRemoteKey), 'Gitee：切后台（gateFlush）立即同步未上传改动');
+let gAutoStored = JSON.parse(decodeB64(giteeServer.files.get(gRemoteKey)));
+assert(gAutoStored.assets[0].name === 'Gitee 后台同步测试', 'Gitee：后台同步内容为最新本地数据');
+assert(gAutoStored.settings.rates === undefined, 'Gitee：云备份载荷不含汇率表');
+// 清空计时器：重置防抖后再停 60s（确保下一个断言不吞并上传）
+EcoCal.saveState();
+await new Promise(r => setTimeout(r, 61000));
+gAutoStored = JSON.parse(decodeB64(giteeServer.files.get(gRemoteKey)));
+assert(gAutoStored.assets[0].name === 'Gitee 后台同步测试', 'Gitee：60s 防抖上传与立即同步合并为一次');
 EcoCal.state.assets[0].name = '测试资产';
 
 // 7.10 禁用后不再上传
@@ -942,6 +973,21 @@ assert(!giteeServer.files.has(gRemoteKey), 'Gitee：禁用自动备份后 saveSt
 EcoCal.state.settings.gitee.enabled = true;
 gb.setToken('');
 globalThis.fetch = origFetch2;
+
+// 7.11 精简载荷应用兼容：恢复（applyPayload）时缺 rates → 保留本地已有汇率
+const localRatesBefore = Object.assign({}, EcoCal.state.settings.rates);
+EcoCal.state.settings.rates.USD = 7.33; // 本地汇率（模拟已联网获取）
+const slimData = {
+  app: 'EcoCal', version: 1, exportedAt: '2026-10-24T00:00:00.000Z',
+  assets: [], valuations: [], trades: [], settings: { baseCurrency: 'CNY' }, // 无 rates
+};
+EcoCal.applyPayload(slimData);
+assert(EcoCal.state.settings.rates.USD === 7.33, '恢复精简云备份：缺 rates 时保留本地已有汇率（7.33 不丢）');
+assert(EcoCal.state.settings.baseCurrency === 'CNY', '恢复精简云备份：基础设置仍生效');
+EcoCal.state.settings.rates = localRatesBefore;
+
+// —— 测试收尾：清空挂起的自动备份计时器（避免残留 60s/退避定时器拖住进程）——
+EcoCal.clearBackupTimers();
 
 /* ---- 汇总结果 ---- */
 console.log('\n结果：' + pass + ' 通过，' + fail + ' 失败');

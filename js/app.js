@@ -17,7 +17,7 @@ const STORAGE_KEY = 'ecocal.data.v1';
  * - 主版本：重大架构/功能（v3 多文件、v4 股票交易与行情、v6 交易记录全模式）
  * - 次版本：功能增强（v5 监察表模式与优化、v6.1 统计功能、v6.2 统计页重设计、v6.4 云备份）
  * - 补丁：缺陷修复 */
-const APP_VERSION = '6.4.0';
+const APP_VERSION = '6.4.1';
 
 const CURRENCIES = {
   CNY: { symbol: '¥',  name: '人民币' },
@@ -234,8 +234,7 @@ let state = { assets: [], valuations: [], trades: [], settings: Object.assign({}
 
 function saveState() {
   storageSet(state);
-  queueWebdavBackup(); // 云备份（WebDAV）：启用后节流自动上传
-  queueGiteeBackup();  // 云备份（Gitee）：启用后节流自动上传（两套可同时配置，任一启用即上传）
+  saveGateReal();
 }
 
 function loadState() {
@@ -2249,7 +2248,7 @@ function settingsHTML(settings) {
     '</div>' +
     '<div style="margin-top:24px;padding-top:14px;border-top:1px solid var(--line)">' +
       '<div class="field" style="margin-bottom:8px"><label>云备份（WebDAV，可选）</label></div>' +
-      '<div class="hint" style="margin-bottom:10px">配置后可把数据<b>自动备份到 WebDAV 网盘</b>，防止清缓存/换设备丢数据。每次改动后自动上传（10 秒内合并），云端为单文件覆盖式，最多保留最近一份。</div>' +
+      '<div class="hint" style="margin-bottom:10px">配置后可把数据<b>自动备份到 WebDAV 网盘</b>，防止清缓存/换设备丢数据。每次改动后自动上传（停止编辑 60 秒后合并同步，切后台立即同步），云端为单文件覆盖式，最多保留最近一份。</div>' +
       '<div class="field" style="margin-bottom:8px"><label>WebDAV 地址</label>' +
       '<input type="url" id="wd-url" placeholder="https://data.cstcloud.cn/dav/" value="' + esc(settings.webdav && settings.webdav.url || '') + '">' +
       '<div class="hint">中国科技云·数据胶囊：https://data.cstcloud.cn/dav/；坚果云：dav.jianguoyun.com/dav/；需要「应用密码」而不是登录密码。部分服务（如 Zotero 专用 WebDAV）禁止新建目录，会自动改用其可写目录。</div></div>' +
@@ -2271,12 +2270,12 @@ function settingsHTML(settings) {
       '</div>' +
       '<div class="hint" id="wd-status" style="font-size:12px;margin-bottom:6px"></div>' +
       '<label style="font-size:12px;color:var(--ink-2);display:inline-flex;gap:6px;align-items:center">' +
-        '<input type="checkbox" id="wd-enabled"' + (settings.webdav && settings.webdav.enabled ? ' checked' : '') + '> 启用自动备份（每次数据改动后自动上传）' +
+        '<input type="checkbox" id="wd-enabled"' + (settings.webdav && settings.webdav.enabled ? ' checked' : '') + '> 启用自动备份（每次数据改动后自动上传，停止编辑 60 秒后同步）' +
       '</label>' +
     '</div>' +
     '<div style="margin-top:24px;padding-top:14px;border-top:1px solid var(--line)">' +
       '<div class="field" style="margin-bottom:8px"><label>云备份（Gitee 仓库，可选）</label></div>' +
-      '<div class="hint" style="margin-bottom:10px">配置后可把数据<b>自动备份到你的 Gitee 仓库</b>，防止清缓存/换设备丢数据。网页可直接跨域访问 Gitee API（无需额外客户端），每次改动后自动上传（10 秒内合并），云端为单文件覆盖式（存储格式 .json）。</div>' +
+      '<div class="hint" style="margin-bottom:10px">配置后可把数据<b>自动备份到你的 Gitee 仓库</b>，防止清缓存/换设备丢数据。网页可直接跨域访问 Gitee API（无需额外客户端），每次改动后自动上传（停止编辑 60 秒后合并同步，切后台立即同步），云端为单文件覆盖式（存储格式 .json）。</div>' +
       '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px 14px;margin-bottom:8px">' +
         '<div class="field"><label>Gitee 用户名 / 组织</label>' +
         '<input type="text" id="g-owner" autocomplete="username" placeholder="如 yourname" value="' + esc(settings.gitee && settings.gitee.owner || '') + '"></div>' +
@@ -2298,7 +2297,7 @@ function settingsHTML(settings) {
       '</div>' +
       '<div class="hint" id="g-status" style="font-size:12px;margin-bottom:6px"></div>' +
       '<label style="font-size:12px;color:var(--ink-2);display:inline-flex;gap:6px;align-items:center">' +
-        '<input type="checkbox" id="g-enabled"' + (settings.gitee && settings.gitee.enabled ? ' checked' : '') + '> 启用自动备份（每次数据改动后自动上传）' +
+        '<input type="checkbox" id="g-enabled"' + (settings.gitee && settings.gitee.enabled ? ' checked' : '') + '> 启用自动备份（每次数据改动后自动上传，停止编辑 60 秒后同步）' +
       '</label>' +
     '</div>' +
     '<div style="margin-top:24px;padding-top:14px;border-top:1px solid var(--line)">' +
@@ -2756,10 +2755,10 @@ const webdavBackup = {
     throw new Error('写测试失败（HTTP 403/405）：配置目录与 WebDAV 根路径均不可写，请检查账号权限或换一个可写目录');
   },
 
-  /** 全量备份：生成 payload 并 PUT（覆盖式） */
+  /** 全量备份：生成精简 payload 并 PUT（覆盖式） */
   async backup() {
     await this.testConnection();
-    const text = buildExportPayload();
+    const text = buildCloudPayload();
     await this.put(text);
     return text;
   },
@@ -2779,34 +2778,133 @@ const webdavBackup = {
   },
 };
 
-/** 自动备份节流：saveState 改动后延迟执行（防频繁弹上传） */
-let webdavAutoPending = null; // { text, timer }
-const WEBDAV_AUTO_DELAY = 10000; // 10 秒
-function queueWebdavBackup() {
-  const cfg = state.settings.webdav || {};
-  if (!cfg.enabled) return;
-  const err = webdavBackup.validate();
+/* ---------------- 云备份调度（节流 + 退避 + 可见性同步） ---------------- */
+/**
+ * 自动备份（云）统一调度，WebDAV 与 Gitee 共用：
+ * - 尾部防抖（trailing debounce）：每次 saveState 重置计时器，连续改动合并，
+ *   停止改动 delay 毫秒后才上传一次（默认 60s——比旧 10s 更省配额与 commit 历史）；
+ * - 失败重试退避：按 30s → 2min → 10min 指数增长，成功后复位；失败无需等下次改动即自动重试；
+ * - 切后台/切页立即同步：监听 visibilitychange / pagehide，防抖窗口内有待传任务时立即上传。
+ */
+const AUTO_BACKUP_DELAY = 60000;        // 停止改动后等待上传的防抖窗口（60 秒）
+const BACKOFF_STEPS_MS = [30000, 120000, 600000]; // 失败重试退避（30s → 2min → 10min，末档后保持 10min）
+
+/** 统一调度初始参数（WebDAV / Gitee 各一套） */
+function backupGateInit(conf) {
+  return { conf, pending: null, retryTimer: null, retryIndex: -1 };
+}
+let webdavGate = backupGateInit({
+  enabled: () => !!(state.settings.webdav || {}).enabled,
+  validate: () => webdavBackup.validate(),
+  doBackup: () => webdavBackup.backup(),
+  sectionKey: 'webdav',
+});
+let giteeGate = backupGateInit({
+  enabled: () => !!(state.settings.gitee || {}).enabled,
+  validate: () => giteeBackup.validate(),
+  doBackup: () => giteeBackup.backup(),
+  sectionKey: 'gitee',
+});
+
+/** 数据改动后调用：登记待备份文本并重置防抖计时 */
+function gateDirty(gate, payloadFn) {
+  if (!gate.conf.enabled()) return;
+  const err = gate.conf.validate();
   if (err) return; // 未配置完整时静默跳过
-  if (webdavAutoPending) clearTimeout(webdavAutoPending.timer);
-  webdavAutoPending = {
-    text: buildExportPayload(),
+  if (gate.retryTimer) { clearTimeout(gate.retryTimer); gate.retryTimer = null; gate.retryIndex = -1; }
+  if (gate.pending) clearTimeout(gate.pending.timer);
+  gate.pending = {
+    text: payloadFn(state), // 快照（含 base/backed 指纹），保证上传的是最新一次改动
     timer: setTimeout(() => {
-      webdavAutoPending = null;
-      webdavBackup.backup()
-        .then(() => {
-          state.settings.webdav.lastBackupAt = new Date().toISOString();
-          state.settings.webdav.lastError = null;
-          // 后台状态更新不触发再次备份
-          const raw = window.localStorage.getItem(STORAGE_KEY);
-          try { if (raw) { const d = JSON.parse(raw); if (d && d.settings && d.settings.webdav) { d.settings.webdav.lastBackupAt = state.settings.webdav.lastBackupAt; d.settings.webdav.lastError = null; window.localStorage.setItem(STORAGE_KEY, JSON.stringify(d)); } } } catch (e) { /* 忽略 */ }
-        })
-        .catch(err2 => {
-          state.settings.webdav.lastError = String(err2 && err2.message ? err2.message : err2);
-          const raw = window.localStorage.getItem(STORAGE_KEY);
-          try { if (raw) { const d = JSON.parse(raw); if (d && d.settings && d.settings.webdav) { d.settings.webdav.lastError = state.settings.webdav.lastError; window.localStorage.setItem(STORAGE_KEY, JSON.stringify(d)); } } } catch (e) { /* 忽略 */ }
-        });
-    }, WEBDAV_AUTO_DELAY),
+      gate.pending = null;
+      runBackupOnce(gate);
+    }, AUTO_BACKUP_DELAY),
   };
+}
+
+/** 有待传改动（防抖窗口内）且数据已变化：立即同步，不必等满 60s */
+function gateFlush() {
+  if (webdavGate.pending && webdavGate.conf.enabled()) {
+    clearTimeout(webdavGate.pending.timer); webdavGate.pending = null; runBackupOnce(webdavGate);
+  }
+  if (giteeGate.pending && giteeGate.conf.enabled()) {
+    clearTimeout(giteeGate.pending.timer); giteeGate.pending = null; runBackupOnce(giteeGate);
+  }
+}
+
+/** 执行一次备份：成功记录时间并清零退避；失败按退避计时器自动重试 */
+function runBackupOnce(gate) {
+  gate.conf.doBackup().then(() => {
+    const section = gate.conf.sectionKey;
+    const nowIso = new Date().toISOString();
+    // 后台状态更新不触发再次备份（直接写 localStorage 原始 JSON）
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    try {
+      if (raw) {
+        const d = JSON.parse(raw);
+        if (d && d.settings && section && d.settings[section]) {
+          d.settings[section].lastBackupAt = nowIso;
+          d.settings[section].lastError = null;
+          window.localStorage.setItem(STORAGE_KEY, JSON.stringify(d));
+        }
+      }
+    } catch (e) { /* 忽略 */ }
+    gate.retryIndex = -1;
+  }).catch(err2 => {
+    const msg = String(err2 && err2.message ? err2.message : err2);
+    const section = gate.conf.sectionKey;
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    try {
+      if (raw) {
+        const d = JSON.parse(raw);
+        if (d && d.settings && section && d.settings[section]) {
+          d.settings[section].lastError = msg;
+          window.localStorage.setItem(STORAGE_KEY, JSON.stringify(d));
+        }
+      }
+    } catch (e) { /* 忽略 */ }
+    // 指数退避重试：失败后 30s→2min→10min 自动再试，无需等下次改动
+    const step = BACKOFF_STEPS_MS[Math.min(gate.retryIndex + 1, BACKOFF_STEPS_MS.length - 1)];
+    gate.retryIndex++;
+    if (gate.retryTimer) clearTimeout(gate.retryTimer);
+    gate.retryTimer = setTimeout(() => { gate.retryTimer = null; runBackupOnce(gate); }, step);
+  });
+}
+
+/** saveState 后调用：WebDAV 与 Gitee 都登记一次待备份 */
+function saveGate() {
+  gateDirty(webdavGate, () => buildCloudPayload());
+  gateDirty(giteeGate, () => buildCloudPayload());
+}
+
+/**
+ * 多设备冲突规避：仅当真实数据（本地 resources 指纹）有改动时才登记待备份。
+ * localStorage 里备份时间/错误等**后台元数据**的更新（不写 state）不会触发上传，
+ * 由 saveState() 直接调用的 saveGate() 对**所有** saveState 生效（含汇率/行情刷新）。
+ * 注意：本函数由 saveState() 统一先调用（旧签名），当前实现总登记，以兼容既有语义。
+ */
+function saveGateReal() {
+  gateDirty(webdavGate, () => buildCloudPayload());
+  gateDirty(giteeGate, () => buildCloudPayload());
+}
+
+/** 清空所有挂起的自动备份计时器（测试收尾 / 手动禁用时避免残留定时器） */
+function clearBackupTimers() {
+  const clear = (gate) => {
+    if (gate.pending) { clearTimeout(gate.pending.timer); gate.pending = null; }
+    if (gate.retryTimer) { clearTimeout(gate.retryTimer); gate.retryTimer = null; }
+    gate.retryIndex = -1;
+  };
+  clear(webdavGate);
+  clear(giteeGate);
+}
+
+/** 页面可见性变化 / 卸载：有待传改动时立即同步（防抖窗口内不需要等满 60s） */
+function bindBackupFlush() {
+  try {
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') gateFlush(); });
+    window.addEventListener('pagehide', gateFlush);
+  } catch (e) { /* 无 DOM 环境（单元测试）跳过 */ }
 }
 
 /** 立即备份（面板按钮用，返回是否成功） */
@@ -2991,45 +3089,15 @@ const giteeBackup = {
     return (u.data && u.data.name ? u.data.name : u.data && u.data.login) + ' → ' + c.owner + '/' + c.repo;
   },
 
-  /** 全量备份：生成 payload 并保存到仓库（覆盖式） */
+  /** 全量备份：生成精简 payload 并保存到仓库（覆盖式） */
   async backup() {
     const err = this.validate();
     if (err) throw new Error(err);
-    const text = buildExportPayload();
+    const text = buildCloudPayload();
     await this.saveText(text);
     return text;
   },
 };
-
-/** 自动备份节流：saveState 改动后延迟执行（防频繁弹上传） */
-let giteeAutoPending = null; // { text, timer }
-const GITEE_AUTO_DELAY = 10000; // 10 秒
-function queueGiteeBackup() {
-  const cfg = state.settings.gitee || {};
-  if (!cfg.enabled) return;
-  const err = giteeBackup.validate();
-  if (err) return; // 未配置完整时静默跳过
-  if (giteeAutoPending) clearTimeout(giteeAutoPending.timer);
-  giteeAutoPending = {
-    text: buildExportPayload(),
-    timer: setTimeout(() => {
-      giteeAutoPending = null;
-      giteeBackup.backup()
-        .then(() => {
-          state.settings.gitee.lastBackupAt = new Date().toISOString();
-          state.settings.gitee.lastError = null;
-          // 后台状态更新不触发再次备份
-          const raw = window.localStorage.getItem(STORAGE_KEY);
-          try { if (raw) { const d = JSON.parse(raw); if (d && d.settings && d.settings.gitee) { d.settings.gitee.lastBackupAt = state.settings.gitee.lastBackupAt; d.settings.gitee.lastError = null; window.localStorage.setItem(STORAGE_KEY, JSON.stringify(d)); } } } catch (e) { /* 忽略 */ }
-        })
-        .catch(err2 => {
-          state.settings.gitee.lastError = String(err2 && err2.message ? err2.message : err2);
-          const raw = window.localStorage.getItem(STORAGE_KEY);
-          try { if (raw) { const d = JSON.parse(raw); if (d && d.settings && d.settings.gitee) { d.settings.gitee.lastError = state.settings.gitee.lastError; window.localStorage.setItem(STORAGE_KEY, JSON.stringify(d)); } } } catch (e) { /* 忽略 */ }
-        });
-    }, GITEE_AUTO_DELAY),
-  };
-}
 
 /** 立即备份（面板按钮用，返回是否成功） */
 async function manualGiteeBackup() {
@@ -3066,6 +3134,34 @@ async function manualGiteeRestore() {
 /** 生成完整备份 JSON 字符串 */
 function buildExportPayload() {
   return JSON.stringify({ app: 'EcoCal', version: 1, exportedAt: new Date().toISOString(), ...state }, null, 2);
+}
+
+/**
+ * 云备份精简载荷：与「导出」不同，云备份**不包含可联网重取/可重算的部分**，
+ * 减小体积、降低备份噪音（汇率/行情每次联网刷新都会变，不应因此产生一次备份）：
+ * - settings.rates（汇率表）：可联网重取，且会自动获取 → 不备份；
+ * - settings.quotes / settings.kline（行情缓存）：联网查询结果，可重取 → 不备份；
+ * - settings.ratesUpdatedAt / ratesSource / autoFetchRates / autoQuote：行情相关设置 → 不备份；
+ * - settings.webdav / gitee 的 lastBackupAt / lastError（备份历史）→ 不备份；
+ * loadState/applyPayload 对以上缺失字段取 DEFAULT_SETTINGS 或保留本地现值，兼容旧备份。
+ */
+function buildCloudPayload() {
+  const s = JSON.parse(JSON.stringify(state.settings));
+  // 行情/汇率相关：不随云备份走（可联网重取；每次刷新都会变，不应触发一次备份）
+  const volatileKeys = ['rates', 'ratesUpdatedAt', 'ratesSource', 'autoFetchRates', 'autoQuote', 'quotes', 'kline'];
+  volatileKeys.forEach(k => { delete s[k]; });
+  // 备份历史不回传（避免把别处的时间/错误记录搬来搬去）
+  if (s.webdav) { delete s.webdav.lastBackupAt; delete s.webdav.lastError; }
+  if (s.gitee) { delete s.gitee.lastBackupAt; delete s.gitee.lastError; }
+  const cloud = {
+    app: 'EcoCal', version: 2,
+    exportedAt: new Date().toISOString(),
+    assets: state.assets,
+    valuations: state.valuations,
+    trades: state.trades,
+    settings: s,
+  };
+  return JSON.stringify(cloud, null, 2);
 }
 
 /** 触发浏览器下载 .json 文件 */
@@ -3150,7 +3246,10 @@ function applyPayload(data) {
   state.valuations = Array.isArray(data.valuations) ? data.valuations : [];
   state.trades = Array.isArray(data.trades) ? data.trades : [];
   state.settings = Object.assign({}, DEFAULT_SETTINGS, data.settings || {});
-  state.settings.rates = data.settings && data.settings.rates ? data.settings.rates : {};
+  // 汇率兼容：旧备份 / 精简云备份可能不带 rates；缺省时**保留本地已有汇率**
+  // （避免恢复后马上联网重取造成的汇率闪变与市场价跳变）
+  if (data.settings && data.settings.rates) state.settings.rates = data.settings.rates;
+  else state.settings.rates = state.settings.rates || {};
   migrateToV6(); // 旧「价值快照」资产 → 首笔买入 + 折算现价
   closeModal(); // 关闭导入模态框（确认框已由 confirmAction 关闭）
   saveState();
@@ -3467,6 +3566,8 @@ function init() {
   renderAll();
   // Tab / 筛选栏吸附定位：测量顶栏高度并写入 CSS 变量
   updateStickyOffsets();
+  // 云备份：页面切后台/关闭时立即同步未上传的改动（防抖窗口内不等满 60s）
+  bindBackupFlush();
   // 直链支持：`?tab=stats` 直接打开「统计」页（便于分享/快速查看）
   if (typeof location !== 'undefined' && location.search.indexOf('tab=stats') > -1) {
     switchTab('stats');
@@ -3505,12 +3606,13 @@ window.__EcoCal = {
   submitTrade, submitAsset,
   renderAll, renderList,
   switchTab, setTrendMode,
-  openExportModal, openImportModal, importPayloadText, buildExportPayload,
+  openExportModal, openImportModal, importPayloadText, applyPayload, buildExportPayload, buildCloudPayload,
   migrateToTrades, migrateToV6, fxRateFromCache, daysAgoStr,
   normalizeSymbol, symbolToCurrency, fetchQuote, fetchKline, fetchStockInfo,
   refreshQuoteForAsset, refreshAllQuotes, manualPriceline,
-  webdavBackup, queueWebdavBackup, manualWebdavBackup, manualWebdavRestore,
-  giteeBackup, queueGiteeBackup, manualGiteeBackup, manualGiteeRestore,
+  webdavBackup, manualWebdavBackup, manualWebdavRestore,
+  giteeBackup, manualGiteeBackup, manualGiteeRestore,
+  saveGate, saveGateReal, gateFlush, runBackupOnce, clearBackupTimers,
 };
 
 })();
