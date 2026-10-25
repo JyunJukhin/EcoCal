@@ -68,6 +68,13 @@ globalThis.localStorage = {
   setItem(k, v) { storage[k] = String(v); },
   removeItem(k) { delete storage[k]; },
 };
+// PIN 锁用 sessionStorage 记录「已解锁」状态，测试环境用内存对象补齐
+const sessionStore = {};
+globalThis.sessionStorage = {
+  getItem(k) { return sessionStore[k] !== undefined ? sessionStore[k] : null; },
+  setItem(k, v) { sessionStore[k] = String(v); },
+  removeItem(k) { delete sessionStore[k]; },
+};
 globalThis.alert = () => {};
 globalThis.prompt = () => null;
 globalThis.Blob = function () {};
@@ -332,6 +339,27 @@ EcoCal.manualPriceline({ ...EcoCal.state.assets[1] });
 priceHtml = elements['modal-body'].innerHTML || '';
 assert(priceHtml.includes('id="p-value"') && priceHtml.includes('当前持仓总金额'), '非股票市值弹窗：填当前持仓总金额');
 assert(!priceHtml.includes('id="p-price"'), '非股票不出现单价输入');
+
+// 4.10b 手动录价不四舍五入：录多少存多少（roundPriceSoft，修复「更新市值自动四舍五入」）
+const stockA = EcoCal.state.assets[0];           // mps 股票，持仓 100 股
+EcoCal.manualPriceline(stockA);
+elements['p-price'] = { value: '7.25255' };      // 5 位小数股价（仅在提交回调中被读取，桩需先存在）
+elements['modal-ok'].onclick();                  // 保存（bindModalButtons 已把 modalOnOk 接到该 handler）
+assert(stockA.lastPrice === 7.25255, '股票手动现价原样保存（7.25255 不四舍五入为 7.2526）');
+const fundA = EcoCal.state.assets[1];            // mpf 基金，份额 1000
+EcoCal.manualPriceline(fundA);
+elements['p-value'] = { value: '7252.555' };     // 持仓总金额（3 位小数）
+elements['modal-ok'].onclick();
+assert(approx(fundA.lastPrice, 7252.555 / 1000), '非股票折算单位价值不取整（7252.555/1000 原样）');
+assert(approx(fundA.lastPrice * 1000, 7252.555), '市值回算保持录入精度（总金额 7252.555 不丢）');
+// 回归：整数/普通小数价格不受影响
+EcoCal.state.assets[0].lastPrice = 12.5;
+EcoCal.manualPriceline(EcoCal.state.assets[0]);
+elements['p-price'] = { value: '12.5' };
+elements['modal-ok'].onclick();
+assert(stockA.lastPrice === 12.5, '普通小数现价仍为原值（12.5）');
+EcoCal.state.assets[0].lastPrice = null;
+fundA.lastPrice = null;
 
 // 4.11 设置面板（清空数据入口 + 汇率/行情开关）
 EcoCal.openSettings();
@@ -988,6 +1016,273 @@ EcoCal.state.settings.rates = localRatesBefore;
 
 // —— 测试收尾：清空挂起的自动备份计时器（避免残留 60s/退避定时器拖住进程）——
 EcoCal.clearBackupTimers();
+
+/* ---- 8. PIN 锁（安全） ---- */
+// 8.1 哈希与校验
+const h1 = EcoCal.pinHash('1234');
+assert(typeof h1 === 'string' && h1.length > 0, 'PIN 哈希：字符串且非空');
+assert(h1 === EcoCal.pinHash('1234'), 'PIN 哈希：同一 PIN 结果稳定');
+assert(h1 !== EcoCal.pinHash('12345'), 'PIN 哈希：不同 PIN 结果不同');
+// 8.2 启用流程：设置 PIN → 锁生效（pinEnabled / pinLocked）
+EcoCal.setPin('4321', 'my-reset');
+assert(EcoCal.pinEnabled() === true, 'PIN：设置后启用');
+assert(EcoCal.checkPin('4321') === true, 'PIN：正确 PIN 校验通过');
+assert(EcoCal.checkPin('0000') === false, 'PIN：错误 PIN 校验失败');
+sessionStore['ecocal.pin.unlocked'] = undefined; // 清解锁标记
+assert(EcoCal.pinLocked() === true, 'PIN：未解锁时锁定');
+EcoCal.pinUnlock();
+assert(EcoCal.pinLocked() === false, 'PIN：解锁后不再锁定');
+EcoCal.pinLock();
+assert(EcoCal.pinLocked() === true, 'PIN：pinLock 再次上锁');
+EcoCal.pinUnlock();
+// 8.3 关闭流程
+EcoCal.clearPin();
+assert(EcoCal.pinEnabled() === false && storage['ecocal.pin.hash'] === undefined, 'PIN：清除后哈希键删除且禁用');
+// 8.4 设置面板「安全」段渲染
+const secHtml = EcoCal.securityHTML();
+assert(secHtml.includes('PIN') && secHtml.includes('s-pin-toggle'), '安全段：含 PIN 开关与输入');
+assert(EcoCal.pinEnabled() === false && secHtml.includes('启用启动 PIN 锁'), '安全段：未启用时显示启用文案');
+
+/* ---- 9. 撤销（删除/清空可恢复） ---- */
+// 9.0 撤销段需要真实资产：测试环境 demo 数据未注入，此处临时塞一个资产再删除
+const undoOrigAssets = EcoCal.state.assets;
+EcoCal.state.assets = [{ id: 'undo_a1', name: '撤销测试', category: 'deposit', currency: 'CNY', lastPrice: 1 }];
+EcoCal.state.trades = [{ id: 'undo_t1', assetId: 'undo_a1', type: 'buy', date: '2026-10-01', quantity: 100, price: 10, fee: 0, note: '', mode: 'qty', createdAt: Date.now() }];
+{
+  const first = EcoCal.state.assets[0];
+  EcoCal.undoWrap('删除产品', () => {
+    EcoCal.state.assets = EcoCal.state.assets.filter(a => a.id !== first.id);
+    EcoCal.state.trades = EcoCal.state.trades.filter(t => t.assetId !== first.id);
+  });
+  assert(elements['confirm-ok'].onclick != null, '撤销：确认框已挂接确认回调');
+  elements['confirm-ok'].onclick(); // 触发确认 → 快照 + 执行删除
+  assert(!EcoCal.state.assets.some(a => a.id === first.id), '撤销：确认后资产确实被删除');
+  assert(EcoCal.state.trades.length === 0, '撤销：确认后关联交易也被删除');
+  // 快照通过内部状态验证（window.__EcoCal 里 undoSnapshot 是初始化快照副本，不能直接读变化值）
+  assert(EcoCal.undoApply() !== null, '撤销：快照已保存（undoApply 返回原快照）');
+  // 应用撤销（undoApply 内部恢复快照并清空）
+  EcoCal.undoApply();
+  assert(EcoCal.undoSnapshot === null, '撤销：应用后快照清空');
+  assert(EcoCal.state.assets.some(a => a.id === first.id), '撤销：资产恢复');
+  assert(EcoCal.state.trades.some(t => t.assetId === first.id), '撤销：关联交易恢复');
+}
+// 还原测试前资产现场
+EcoCal.state.assets = undoOrigAssets;
+EcoCal.state.trades = [];
+
+/* ---- 10. 导出 Excel（.xlsx） ---- */
+// 10.1 ZIP 容器基础结构
+let xlsxBytes;
+{
+  const savedAssets = EcoCal.state.assets, savedTrades = EcoCal.state.trades;
+  EcoCal.state.assets = [{ id: 'xl_a1', name: '招行-测试', category: 'deposit', currency: 'CNY', lastPrice: 1 }];
+  EcoCal.state.trades = [{ id: 'xl_t1', assetId: 'xl_a1', type: 'buy', date: '2026-10-01', quantity: 2350, price: 1, fee: 0, note: '定存', mode: 'amount', createdAt: Date.now() }];
+  xlsxBytes = EcoCal.buildXlsxExcel();
+  EcoCal.state.assets = savedAssets; EcoCal.state.trades = savedTrades;
+}
+assert(xlsxBytes && xlsxBytes.length > 1000, 'Excel：字节数组非空且大于 1KB');
+assert(xlsxBytes[0] === 0x50 && xlsxBytes[1] === 0x4B, 'Excel：ZIP 魔数 PK（0x50 0x4B）');
+assert(xlsxBytes[1] === 0x4B, 'Excel：ZIP 魔数第二位 0x4B');
+{
+  const txt = Buffer.from(xlsxBytes).toString('utf8'); // ZIP 内 XML 为 UTF-8
+  assert(txt.includes('[Content_Types].xml'), 'Excel：包含 [Content_Types].xml 部件');
+  assert(txt.includes('xl/workbook.xml'), 'Excel：包含 workbook.xml');
+  assert(txt.includes('xl/sharedStrings.xml'), 'Excel：包含 sharedStrings.xml');
+  assert(txt.includes('sheet1.xml') && txt.includes('sheet2.xml') && txt.includes('sheet3.xml'), 'Excel：含三个工作表部件');
+  assert(txt.includes('招行-测试'), 'Excel：sharedStrings 含资产名');
+  assert(txt.includes('持仓汇总') && txt.includes('交易流水') && txt.includes('按资产统计'), 'Excel：三个工作表名');
+  assert(txt.includes('ecocal-export') === false, 'Excel：工作簿内不含导出文件名（只有下载时才用）');
+}
+// 10.2 下载触发
+let dlName = '', blobType = '', xlsxClicked = false;
+const xlsxDesc = { classList: { add() {}, remove() {}, toggle() {} }, remove() { xlsxClicked = true; }, click() { xlsxClicked = true; } };
+const savedCreate = document.createElement;
+document.createElement = tag => (tag === 'a' ? xlsxDesc : makeEl('dyn'));
+const savedURL = globalThis.URL;
+globalThis.URL = { createObjectURL: () => 'blob:fake', revokeObjectURL: () => {} };
+const savedBlob = globalThis.Blob;
+globalThis.Blob = class { constructor(parts, opts) { blobType = opts && opts.type; } };
+try {
+  const savedBody = document.body;
+  document.body = { appendChild() {}, removeChild() {} };
+  const savedClick = document.body.appendChild;
+  document.body.appendChild = () => {};
+  EcoCal.downloadXlsx();
+  dlName = xlsxDesc.download || '';
+  document.body = savedBody;
+  globalThis.Blob = savedBlob;
+  globalThis.URL = savedURL;
+  document.createElement = savedCreate;
+} catch (e) {
+  globalThis.Blob = savedBlob;
+  globalThis.URL = savedURL;
+  document.createElement = savedCreate;
+  throw e;
+}
+assert(dlName === 'ecocal-export-' + EcoCal.todayStr() + '.xlsx', 'Excel：下载文件名 = ecocal-export-日期.xlsx（实际 ' + dlName + '）');
+assert(blobType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'Excel：Blob MIME 正确');
+assert(xlsxClicked, 'Excel：锚点 click 被触发');
+
+/* ---- 11. 备份提醒（未备份 > N 天提醒手动备份） ---- */
+{
+  const savedW = EcoCal.state.settings.webdav, savedG = EcoCal.state.settings.gitee, savedRem = EcoCal.state.settings.backupReminder;
+  const savedNow = Date.now;
+  try {
+    // 11.1 未配置自动备份 + 从未备份过 → 需要提醒
+    EcoCal.state.settings.webdav = { enabled: false, lastBackupAt: null };
+    EcoCal.state.settings.gitee = { enabled: false, lastBackupAt: null };
+    EcoCal.state.settings.backupReminder = { enabled: true, days: 7 };
+    assert(EcoCal.anyAutoBackupEnabled() === false, '提醒：无自动备份启用');
+    assert(EcoCal.lastBackupTime() === null, '提醒：从未备份 → lastBackupTime null');
+    assert(EcoCal.needsBackupReminder() === true, '提醒：从未备份且开启提醒 → 需要提醒');
+
+    // 11.2 有自动备份（任一）→ 不提醒
+    EcoCal.state.settings.gitee = { enabled: true, lastBackupAt: null };
+    assert(EcoCal.anyAutoBackupEnabled() === true, '提醒：Gitee 启用 → 有自动备份');
+    assert(EcoCal.needsBackupReminder() === false, '提醒：有自动备份 → 不提醒');
+
+    // 11.3 超过 N 天 → 提醒；N 天内 → 不提醒
+    EcoCal.state.settings.gitee = { enabled: false, lastBackupAt: null };
+    Date.now = () => 2000000000000; // 固定"现在"
+    EcoCal.state.settings.webdav = { enabled: false, lastBackupAt: new Date(Date.now() - 10 * 86400000).toISOString() }; // 10 天前
+    EcoCal.state.settings.backupReminder = { enabled: true, days: 7 };
+    assert(EcoCal.lastBackupTime() !== null && EcoCal.needsBackupReminder() === true, '提醒：10 天 > 7 天上限 → 需要提醒');
+    EcoCal.state.settings.webdav = { enabled: false, lastBackupAt: new Date(Date.now() - 3 * 86400000).toISOString() }; // 3 天前
+    assert(EcoCal.needsBackupReminder() === false, '提醒：3 天 < 7 天上限 → 不提醒');
+    // 边界：恰好 N 天 → 提醒
+    EcoCal.state.settings.webdav = { enabled: false, lastBackupAt: new Date(Date.now() - 7 * 86400000).toISOString() };
+    assert(EcoCal.needsBackupReminder() === true, '提醒：恰好 7 天 → 需要提醒');
+
+    // 11.4 未启用提醒 / days 非法 → 不提醒
+    EcoCal.state.settings.backupReminder = { enabled: false, days: 7 };
+    assert(EcoCal.needsBackupReminder() === false, '提醒：未启用 → 不提醒');
+    EcoCal.state.settings.backupReminder = { enabled: true, days: 0 };
+    assert(EcoCal.needsBackupReminder() === false, '提醒：days=0（非法）→ 不提醒');
+
+    // 11.5 两天不同 → 每天最多提醒一次（localStorage 标记）
+    const savedLSGet = globalThis.localStorage.getItem, savedLSSet = globalThis.localStorage.setItem;
+    const savedToday = EcoCal.todayStr;
+    const lsKeys = {};
+    globalThis.localStorage.getItem = k => (k in lsKeys ? lsKeys[k] : null);
+    globalThis.localStorage.setItem = (k, v) => { lsKeys[k] = v; };
+    EcoCal.state.settings.webdav = { enabled: false, lastBackupAt: null };
+    EcoCal.state.settings.gitee = { enabled: false, lastBackupAt: null };
+    EcoCal.state.settings.backupReminder = { enabled: true, days: 7 };
+    EcoCal.todayStr = () => '2026-10-25';
+    try {
+      // initBackupReminders 内部用真实 confirmAction（函数内部定义，桩覆盖无效）
+      // 通过 confirm-ok 元素的 onclick 是否被挂上来判断提醒弹窗是否触发
+      elements['confirm-ok'].onclick = null;
+      EcoCal.initBackupReminders();
+      assert(elements['confirm-ok'].onclick !== null, '提醒：首次本地检查触发提醒弹窗（confirm-ok 已挂回调）');
+      assert(lsKeys['ecocal.backup-reminder.2026-10-25'] === '1', '提醒：已写当天标记，避免重复弹窗');
+      const okText = elements['confirm-ok'].textContent;
+      assert(okText === '去备份', '提醒：确认按钮文案为「去备份」（实际 ' + okText + '）');
+      // 同一天再次检查：先还原回调，标记存在 → 不重复弹窗
+      elements['confirm-ok'].onclick = null;
+      EcoCal.initBackupReminders();
+      assert(elements['confirm-ok'].onclick === null, '提醒：同一天再次检查不重复弹窗');
+    } finally {
+      globalThis.localStorage.getItem = savedLSGet;
+      globalThis.localStorage.setItem = savedLSSet;
+      EcoCal.todayStr = savedToday;
+    }
+  } finally {
+    Date.now = savedNow;
+    EcoCal.state.settings.webdav = savedW;
+    EcoCal.state.settings.gitee = savedG;
+    EcoCal.state.settings.backupReminder = savedRem;
+  }
+}
+
+/* ---- 12. 设置页 Tab + 备份提醒面板 ---- */
+{
+  const savedState = JSON.stringify(EcoCal.state);
+  const savedSettings = JSON.parse(savedState).settings;
+  const html = EcoCal.settingsHTML(savedSettings);
+  assert(html.includes('class="set-tab on" data-tab="basic"'), '设置页：四 Tab（基础）已渲染且默认选中');
+  assert(html.includes('data-tab="stats"') && html.includes('data-tab="backup"') && html.includes('data-tab="security"'), '设置页：四 Tab（统计/备份/安全）齐备');
+  assert(html.includes('class="set-pane" data-tab="basic"') && html.includes('data-tab="security"'), '设置页：四个 pane 存在');
+  assert(html.includes('id="rem-enabled"') && html.includes('id="rem-days"'), '设置页：备份提醒开关与天数输入存在');
+  assert(html.includes('id="wd-backup"') && html.includes('id="g-backup"'), '设置页：备份页含 WebDAV 与 Gitee 面板');
+  assert(html.includes('id="s-clear"'), '设置页：数据管理（清空）保留');
+  assert(html.includes('id="s-pin-toggle"'), '设置页：安全页含 PIN 设置');
+
+  // 打开设置面板 → 读入 Tab 绑定（openSettings 里挂 onclick）
+  const savedConfirm = globalThis.confirmAction;
+  const savedModal = globalThis.$id;
+  const savedGEB = document.getElementById;
+  // openSettings 会 openModal + 大量 $id 绑定；测试桩提供元素即可
+  const setEls = {};
+  ['s-base','s-fetch','s-autofetch','s-updated','s-autoquote','s-refresh-all','s-rf','s-liab','s-cap',
+   'wd-url','wd-user','wd-pass','wd-dir','wd-test','wd-backup','wd-restore','wd-clear-pass','wd-status','wd-enabled',
+   'g-owner','g-repo','g-token','g-path','g-test','g-backup','g-restore','g-clear-token','g-status','g-enabled',
+   'rem-enabled','rem-days','s-clear','s-pin-toggle','s-pin','s-pin-reset','modal-ok','modal-close','modal-cancel'].forEach(id => {
+    setEls[id] = makeEl(id);
+    if (id === 'rem-days') setEls[id].value = '7';
+  });
+  // document.querySelectorAll('.rate-input') → []
+  const oldQSA = document.querySelectorAll;
+  document.querySelectorAll = sel => {
+    if (sel === '.rate-input') return [];
+    if (sel === '.set-tab') return [setEls.__tab_basic, setEls.__tab_stats, setEls.__tab_backup, setEls.__tab_security];
+    if (sel === '.set-pane') return [setEls.__pane_basic, setEls.__pane_stats, setEls.__pane_backup, setEls.__pane_security];
+    return oldQSA(sel);
+  };
+  ['__tab_basic','__tab_stats','__tab_backup','__tab_security'].forEach((k, i) => {
+    setEls[k] = makeEl(k);
+    setEls[k].dataset = { tab: ['basic','stats','backup','security'][i] };
+  });
+  ['__pane_basic','__pane_stats','__pane_backup','__pane_security'].forEach((k, i) => {
+    setEls[k] = makeEl(k);
+    setEls[k].dataset = { tab: ['basic','stats','backup','security'][i] };
+    setEls[k].style.display = i === 0 ? '' : 'none';
+  });
+  document.getElementById = id => setEls[id] || elements[id] || (elements[id] = makeEl(id));
+  const savedGet = globalThis.localStorage.getItem, savedSet = globalThis.localStorage.setItem;
+  globalThis.localStorage.getItem = k => (k === 'ecocal.webdav.pass' || k === 'ecocal.gitee.token') ? null : (savedGet ? savedGet(k) : null);
+  globalThis.localStorage.setItem = savedSet || (() => {});
+  globalThis.confirmAction = function () {};
+  try {
+    EcoCal.openSettings();
+    // Tab 切换：点击「备份」Tab → basic 隐藏、backup 显示
+    const basicPane = setEls.__pane_basic, backupPane = setEls.__pane_backup, secPane = setEls.__pane_security;
+    const basicTab = setEls.__tab_basic, backupTab = setEls.__tab_backup;
+    backupTab.onclick();
+    assert(basicPane.style.display === 'none' && backupPane.style.display === '', '设置页：点击「备份」Tab → 显示备份 pane、隐藏基础 pane');
+    assert(backupTab.classList.contains('on'), '设置页：点击后 Tab 高亮切换');
+    basicTab.onclick();
+    assert(basicPane.style.display === '' && backupPane.style.display === 'none', '设置页：切回「基础」Tab 正常');
+    // 备份提醒开关：勾选 → 写入 settings 并保存
+    const remEnabled = setEls['rem-enabled'];
+    remEnabled.checked = true;
+    remEnabled.onchange();
+    assert(EcoCal.state.settings.backupReminder && EcoCal.state.settings.backupReminder.enabled === true, '设置页：备份提醒开关勾选 → settings.backupReminder.enabled=true');
+    remEnabled.checked = false;
+    remEnabled.onchange();
+    assert(EcoCal.state.settings.backupReminder.enabled === false, '设置页：取消勾选 → enabled=false');
+    // 天数输入
+    const remDays = setEls['rem-days'];
+    remDays.value = '14'; remDays.oninput();
+    assert(EcoCal.state.settings.backupReminder.days === 14, '设置页：天数输入 14 → settings.backupReminder.days=14');
+    // 保存
+    // modal-ok 的 onclick 在 init 的 bindModalButtons() 里已绑定（elements 里的原始桩），
+    // document.getElementById 被本测试桩覆盖后 openSettings 内部取到的 setEls 桩没有 onclick；
+    // 真正可执行保存逻辑的是 elements['modal-ok'].onclick（它包装了当前 modalOnOk）
+    assert(elements['modal-ok'].onclick !== null, '设置页：modal-ok 已绑定保存');
+    setEls['s-base'].value = setEls['s-base'].value || 'CNY';
+    const okBtn = elements['modal-ok'];
+    okBtn.onclick(); // 触发保存：modalOnOk() 执行（若缺字段会抛，测试即失败）
+  } finally {
+    document.getElementById = savedGEB;
+    globalThis.$id = savedModal;
+    globalThis.confirmAction = savedConfirm;
+    document.querySelectorAll = oldQSA;
+    globalThis.localStorage.getItem = savedGet;
+    globalThis.localStorage.setItem = savedSet;
+    EcoCal.state = JSON.parse(savedState);
+  }
+}
 
 /* ---- 汇总结果 ---- */
 console.log('\n结果：' + pass + ' 通过，' + fail + ' 失败');

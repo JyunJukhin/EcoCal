@@ -17,7 +17,7 @@ const STORAGE_KEY = 'ecocal.data.v1';
  * - 主版本：重大架构/功能（v3 多文件、v4 股票交易与行情、v6 交易记录全模式）
  * - 次版本：功能增强（v5 监察表模式与优化、v6.1 统计功能、v6.2 统计页重设计、v6.4 云备份）
  * - 补丁：缺陷修复 */
-const APP_VERSION = '6.4.1';
+const APP_VERSION = '6.4.2';
 
 const CURRENCIES = {
   CNY: { symbol: '¥',  name: '人民币' },
@@ -133,6 +133,16 @@ function round2(n) { return Math.round((Number(n) + Number.EPSILON) * 100) / 100
 /* 数量/单价保留 4 位小数（股票价格、基金份额等），避免浮点误差累积 */
 function roundQty(n) { return Math.round((Number(n) + Number.EPSILON) * 10000) / 10000; }
 function roundPrice(n) { return Math.round((Number(n) + Number.EPSILON) * 10000) / 10000; }
+/**
+ * 价格「软修整」：只修正极小浮点误差（EPSILON 级别），不做任何取整。
+ * 与 roundPrice 的区别：roundPrice 会把 7.25255 → 7.2526 等四舍五入到 4 位小数；
+ * 用户通过「✎ 现价 / ✎ 市值」手动录入的数值应原样保留（不四舍五入）。
+ */
+function roundPriceSoft(n) {
+  const x = Number(n);
+  if (!isFinite(x)) return x;
+  return Math.abs(Math.round(x) - x) < 1e-10 ? Math.round(x) : (Math.round(x * 1e12) / 1e12);
+}
 function currencySymbol(code) {
   if (CURRENCIES[code]) return CURRENCIES[code].symbol;
   if (CUSTOM_CURRENCIES[code]) return CUSTOM_CURRENCIES[code].symbol;
@@ -227,6 +237,12 @@ const DEFAULT_SETTINGS = {
     path: 'ecocal-backup.json', // 仓库内备份文件路径（存储格式回到 .json）
     lastBackupAt: null,   // 最近一次备份成功时间
     lastError: null,      // 最近一次失败原因（提示用）
+  },
+  pinEnabled: false,      // 是否启用启动 PIN 锁（锁定时不显示任何资产数据）
+  // 备份提醒：关闭自动备份（或自动备份连续失败）时，超过 N 天没有成功备份则提醒手动备份
+  backupReminder: {
+    enabled: false,       // 是否启用「未备份提醒」
+    days: 7,              // 超过 N 天未成功备份时提醒（N 由用户设置）
   },
 };
 
@@ -1744,11 +1760,11 @@ async function applyLatestRates(opts) {
 }
 
 /* ---- 交易记录表单（交易记录模式） ---- */
-/** 数量/单价显示：去掉冗余尾零，保留至多 4 位小数 */
+/** 数量/单价显示：去掉冗余尾零，保留至多 8 位小数（可完整显示手动录入的 4 位以上小数价格） */
 function fmtQty(n) {
   const num = Number(n);
   if (!isFinite(num)) return '--';
-  return num.toLocaleString('zh-CN', { maximumFractionDigits: 4 });
+  return num.toLocaleString('zh-CN', { maximumFractionDigits: 8 });
 }
 
 /**
@@ -2137,6 +2153,7 @@ function manualPriceline(asset) {
   const pos = Calc.tradePosition(asset, state.trades, null);
   const qty = pos.qty;
   if (!isStock && qty <= 0) { alert('尚无持仓，无法设置持仓总金额。请先添加一笔买入。'); return; }
+  // 回填显示用当前单位价值 × 持有数量的总金额（4 位小数展示，提交时原样折算）
   const currentValue = (asset.lastPrice != null && qty > 0) ? round2(qty * asset.lastPrice) : '';
 
   let body;
@@ -2162,11 +2179,14 @@ function manualPriceline(asset) {
     if (isStock) {
       const v = parseFloat($id('p-price').value);
       if (!isFinite(v) || v <= 0) { alert('现价必须为正数。'); return; }
-      asset.lastPrice = roundQty(v);
+      // 手动录入的现价/市值原样保存（只做浮点误差修整，不取整）：
+      // 之前 roundQty 会把 7.2525 → 7.2525 之外的值舍入到 4 位小数，用户录多少就是多少。
+      asset.lastPrice = roundPriceSoft(v);
     } else {
       const v = parseFloat($id('p-value').value);
       if (!isFinite(v) || v <= 0) { alert('持仓总金额必须为正数。'); return; }
-      asset.lastPrice = roundQty(v / qty);
+      // 持仓总金额 ÷ 份额折算单位价值：同样只修整浮点误差、不取整（用户录入的总金额要精确保留）
+      asset.lastPrice = roundPriceSoft(v / qty);
     }
     asset.priceSource = 'manual';
     asset.lastQuoteAt = Date.now();
@@ -2211,31 +2231,40 @@ function settingsHTML(settings) {
   const lastUpdate = settings.ratesUpdatedAt
     ? '上次联网更新：' + new Date(settings.ratesUpdatedAt).toLocaleString() + '（' + esc(settings.ratesSource || '') + '）'
     : '尚未联网更新过汇率（可点击下方按钮获取）';
-  return '<div class="settings-tip">汇率用于把各币种资产换算为<b>基准币种</b>做总价值统计。可点击下方按钮<b>联网获取最新汇率</b>（免费公开接口，仅供统计参考，不做行情依据）；也可手动维护。未设置汇率的币种会<b>不计入总额统计</b>，并在界面标注提醒。</div>' +
-    '<div class="field" style="margin-bottom:10px"><label>基准（统计）币种</label>' +
-    '<select id="s-base">' + Object.keys(CURRENCIES).map(c =>
-      '<option value="' + c + '"' + (c === settings.baseCurrency ? ' selected' : '') + '>' + c + ' ' + currencyName(c) + '</option>').join('') +
-    '</select><div class="hint">切换基准币种时，现有汇率会自动按比例折算，保持各币种相对价值不变。</div></div>' +
-    '<div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap">' +
-      '<button type="button" id="s-fetch" class="btn btn-primary btn-mini">⟳ 获取最新汇率</button>' +
-      '<label style="font-size:12px;color:var(--ink-2);display:inline-flex;gap:6px;align-items:center">' +
-        '<input type="checkbox" id="s-autofetch"' + (settings.autoFetchRates !== false ? ' checked' : '') + '> 每次启动自动获取一次' +
-      '</label>' +
+  const rem = settings.backupReminder || {};
+  const remDaysVal = (rem.days != null && Number(rem.days) > 0) ? Number(rem.days) : 7;
+  return '<div class="settings-tabs">' +
+      '<button type="button" class="set-tab on" data-tab="basic">汇率与行情</button>' +
+      '<button type="button" class="set-tab" data-tab="stats">统计</button>' +
+      '<button type="button" class="set-tab" data-tab="backup">备份</button>' +
+      '<button type="button" class="set-tab" data-tab="security">安全</button>' +
     '</div>' +
-    '<div class="hint" id="s-updated" style="font-size:12px;color:var(--ink-3);margin-bottom:10px">' + lastUpdate + '</div>' +
-    '<div class="field" style="margin-bottom:4px"><label>各币种汇率（1 币种 = X 基准币种）</label></div>' + rows +
-    '<div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--line)">' +
-      '<div class="field" style="margin-bottom:8px"><label>行情设置（填写了行情代码的产品）</label></div>' +
-      '<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">' +
+    '<div class="set-pane" data-tab="basic">' +
+      '<div class="settings-tip">汇率用于把各币种资产换算为<b>基准币种</b>做总价值统计。可点击下方按钮<b>联网获取最新汇率</b>（免费公开接口，仅供统计参考，不做行情依据）；也可手动维护。未设置汇率的币种会<b>不计入总额统计</b>，并在界面标注提醒。</div>' +
+      '<div class="field" style="margin-bottom:10px"><label>基准（统计）币种</label>' +
+      '<select id="s-base">' + Object.keys(CURRENCIES).map(c =>
+        '<option value="' + c + '"' + (c === settings.baseCurrency ? ' selected' : '') + '>' + c + ' ' + currencyName(c) + '</option>').join('') +
+      '</select><div class="hint">切换基准币种时，现有汇率会自动按比例折算，保持各币种相对价值不变。</div></div>' +
+      '<div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap">' +
+        '<button type="button" id="s-fetch" class="btn btn-primary btn-mini">⟳ 获取最新汇率</button>' +
         '<label style="font-size:12px;color:var(--ink-2);display:inline-flex;gap:6px;align-items:center">' +
-          '<input type="checkbox" id="s-autoquote"' + (settings.autoQuote !== false ? ' checked' : '') + '> 打开页面自动刷新行情（每产品 10 分钟一次）' +
+          '<input type="checkbox" id="s-autofetch"' + (settings.autoFetchRates !== false ? ' checked' : '') + '> 每次启动自动获取一次' +
         '</label>' +
-        '<button type="button" id="s-refresh-all" class="btn btn-ghost btn-mini">⟳ 立即刷新全部行情</button>' +
       '</div>' +
-      '<div class="hint" style="margin-top:8px">行情来自腾讯公开免费接口，仅供记录与计算参考；接口不可用时用卡片上的「✎ 现价 / ✎ 市值」手动录入。</div>' +
+      '<div class="hint" id="s-updated" style="font-size:12px;color:var(--ink-3);margin-bottom:10px">' + lastUpdate + '</div>' +
+      '<div class="field" style="margin-bottom:4px"><label>各币种汇率（1 币种 = X 基准币种）</label></div>' + rows +
+      '<div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--line)">' +
+        '<div class="field" style="margin-bottom:8px"><label>行情设置（填写了行情代码的产品）</label></div>' +
+        '<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">' +
+          '<label style="font-size:12px;color:var(--ink-2);display:inline-flex;gap:6px;align-items:center">' +
+            '<input type="checkbox" id="s-autoquote"' + (settings.autoQuote !== false ? ' checked' : '') + '> 打开页面自动刷新行情（每产品 10 分钟一次）' +
+          '</label>' +
+          '<button type="button" id="s-refresh-all" class="btn btn-ghost btn-mini">⟳ 立即刷新全部行情</button>' +
+        '</div>' +
+        '<div class="hint" style="margin-top:8px">行情来自腾讯公开免费接口，仅供记录与计算参考；接口不可用时用卡片上的「✎ 现价 / ✎ 市值」手动录入。</div>' +
+      '</div>' +
     '</div>' +
-    '<div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--line)">' +
-      '<div class="field" style="margin-bottom:4px"><label>统计设置</label></div>' +
+    '<div class="set-pane" data-tab="stats" style="display:none">' +
       '<div class="field" style="margin-bottom:10px"><label>无风险年化利率（%，夏普比率用）</label>' +
       '<input type="number" id="s-rf" min="0" step="0.1" value="' + esc(settings.riskFreeRate != null ? settings.riskFreeRate : 2) + '">' +
       '<div class="hint">一般参考国债收益率取 1%–3%。</div></div>' +
@@ -2246,7 +2275,7 @@ function settingsHTML(settings) {
       '<input type="number" id="s-cap" min="0" max="100" step="1" value="' + esc(settings.singleAssetCap != null ? settings.singleAssetCap : 20) + '">' +
       '<div class="hint">集中度统计中，单一标的占比超过该比例时高亮提示。</div></div>' +
     '</div>' +
-    '<div style="margin-top:24px;padding-top:14px;border-top:1px solid var(--line)">' +
+    '<div class="set-pane" data-tab="backup" style="display:none">' +
       '<div class="field" style="margin-bottom:8px"><label>云备份（WebDAV，可选）</label></div>' +
       '<div class="hint" style="margin-bottom:10px">配置后可把数据<b>自动备份到 WebDAV 网盘</b>，防止清缓存/换设备丢数据。每次改动后自动上传（停止编辑 60 秒后合并同步，切后台立即同步），云端为单文件覆盖式，最多保留最近一份。</div>' +
       '<div class="field" style="margin-bottom:8px"><label>WebDAV 地址</label>' +
@@ -2272,42 +2301,52 @@ function settingsHTML(settings) {
       '<label style="font-size:12px;color:var(--ink-2);display:inline-flex;gap:6px;align-items:center">' +
         '<input type="checkbox" id="wd-enabled"' + (settings.webdav && settings.webdav.enabled ? ' checked' : '') + '> 启用自动备份（每次数据改动后自动上传，停止编辑 60 秒后同步）' +
       '</label>' +
-    '</div>' +
-    '<div style="margin-top:24px;padding-top:14px;border-top:1px solid var(--line)">' +
-      '<div class="field" style="margin-bottom:8px"><label>云备份（Gitee 仓库，可选）</label></div>' +
-      '<div class="hint" style="margin-bottom:10px">配置后可把数据<b>自动备份到你的 Gitee 仓库</b>，防止清缓存/换设备丢数据。网页可直接跨域访问 Gitee API（无需额外客户端），每次改动后自动上传（停止编辑 60 秒后合并同步，切后台立即同步），云端为单文件覆盖式（存储格式 .json）。</div>' +
-      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px 14px;margin-bottom:8px">' +
-        '<div class="field"><label>Gitee 用户名 / 组织</label>' +
-        '<input type="text" id="g-owner" autocomplete="username" placeholder="如 yourname" value="' + esc(settings.gitee && settings.gitee.owner || '') + '"></div>' +
-        '<div class="field"><label>仓库名</label>' +
-        '<input type="text" id="g-repo" placeholder="如 ecocal-backup" value="' + esc(settings.gitee && settings.gitee.repo || '') + '">' +
-        '<div class="hint">建议使用<b>私有</b>仓库存放备份。</div></div>' +
+      '<div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--line)">' +
+        '<div class="field" style="margin-bottom:8px"><label>云备份（Gitee 仓库，可选）</label></div>' +
+        '<div class="hint" style="margin-bottom:10px">配置后可把数据<b>自动备份到你的 Gitee 仓库</b>，防止清缓存/换设备丢数据。网页可直接跨域访问 Gitee API（无需额外客户端），每次改动后自动上传（停止编辑 60 秒后合并同步，切后台立即同步），云端为单文件覆盖式（存储格式 .json）。</div>' +
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px 14px;margin-bottom:8px">' +
+          '<div class="field"><label>Gitee 用户名 / 组织</label>' +
+          '<input type="text" id="g-owner" autocomplete="username" placeholder="如 yourname" value="' + esc(settings.gitee && settings.gitee.owner || '') + '"></div>' +
+          '<div class="field"><label>仓库名</label>' +
+          '<input type="text" id="g-repo" placeholder="如 ecocal-backup" value="' + esc(settings.gitee && settings.gitee.repo || '') + '">' +
+          '<div class="hint">建议使用<b>私有</b>仓库存放备份。</div></div>' +
+        '</div>' +
+        '<div class="field" style="margin-bottom:8px"><label>私人令牌（access_token）</label>' +
+        '<input type="password" id="g-token" autocomplete="new-password" placeholder="' + (giteeTokenSet() ? '（已保存，留空则不变）' : '') + '" value="">' +
+        '<div class="hint">在 gitee.com/profile/personal_access_tokens 生成，勾选 <b>projects</b> 读写权限；不会出现在备份文件与导出内容里，仅存本机。</div></div>' +
+        '<div class="field" style="margin-bottom:10px"><label>仓库内备份文件路径</label>' +
+        '<input type="text" id="g-path" value="' + esc(settings.gitee && settings.gitee.path || 'ecocal-backup.json') + '" placeholder="ecocal-backup.json">' +
+        '<div class="hint">默认 ecocal-backup.json，存于仓库根目录。</div></div>' +
+        '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:6px">' +
+          '<button type="button" id="g-test" class="btn btn-ghost btn-mini">🔌 测试连接</button>' +
+          '<button type="button" id="g-backup" class="btn btn-primary btn-mini">⬆ 立即备份</button>' +
+          '<button type="button" id="g-restore" class="btn btn-ghost btn-mini">⬇ 从云端恢复</button>' +
+          '<button type="button" id="g-clear-token" class="btn btn-ghost btn-mini" style="display:' + (giteeTokenSet() ? '' : 'none') + '">清除已存令牌</button>' +
+        '</div>' +
+        '<div class="hint" id="g-status" style="font-size:12px;margin-bottom:6px"></div>' +
+        '<label style="font-size:12px;color:var(--ink-2);display:inline-flex;gap:6px;align-items:center">' +
+          '<input type="checkbox" id="g-enabled"' + (settings.gitee && settings.gitee.enabled ? ' checked' : '') + '> 启用自动备份（每次数据改动后自动上传，停止编辑 60 秒后同步）' +
+        '</label>' +
       '</div>' +
-      '<div class="field" style="margin-bottom:8px"><label>私人令牌（access_token）</label>' +
-      '<input type="password" id="g-token" autocomplete="new-password" placeholder="' + (giteeTokenSet() ? '（已保存，留空则不变）' : '') + '" value="">' +
-      '<div class="hint">在 gitee.com/profile/personal_access_tokens 生成，勾选 <b>projects</b> 读写权限；不会出现在备份文件与导出内容里，仅存本机。</div></div>' +
-      '<div class="field" style="margin-bottom:10px"><label>仓库内备份文件路径</label>' +
-      '<input type="text" id="g-path" value="' + esc(settings.gitee && settings.gitee.path || 'ecocal-backup.json') + '" placeholder="ecocal-backup.json">' +
-      '<div class="hint">默认 ecocal-backup.json，存于仓库根目录。</div></div>' +
-      '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:6px">' +
-        '<button type="button" id="g-test" class="btn btn-ghost btn-mini">🔌 测试连接</button>' +
-        '<button type="button" id="g-backup" class="btn btn-primary btn-mini">⬆ 立即备份</button>' +
-        '<button type="button" id="g-restore" class="btn btn-ghost btn-mini">⬇ 从云端恢复</button>' +
-        '<button type="button" id="g-clear-token" class="btn btn-ghost btn-mini" style="display:' + (giteeTokenSet() ? '' : 'none') + '">清除已存令牌</button>' +
+      '<div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--line)">' +
+        '<div class="field" style="margin-bottom:8px"><label>备份提醒（可选）</label>' +
+        '<label style="font-size:12px;color:var(--ink-2);display:inline-flex;gap:6px;align-items:center;margin-bottom:8px">' +
+          '<input type="checkbox" id="rem-enabled"' + (rem.enabled ? ' checked' : '') + '> 超过 N 天没有成功备份时，提醒我手动备份' +
+        '</label>' +
+        '<div class="field" style="margin-bottom:4px"><label>间隔天数（N）</label>' +
+        '<input type="number" id="rem-days" min="1" max="365" step="1" value="' + remDaysVal + '">' +
+        '<div class="hint">若本机数据超过 N 天没有成功备份（未配置自动备份或自动备份连续失败），打开页面时会提醒一次并引导去「导出 / 立即备份」。</div></div>' +
       '</div>' +
-      '<div class="hint" id="g-status" style="font-size:12px;margin-bottom:6px"></div>' +
-      '<label style="font-size:12px;color:var(--ink-2);display:inline-flex;gap:6px;align-items:center">' +
-        '<input type="checkbox" id="g-enabled"' + (settings.gitee && settings.gitee.enabled ? ' checked' : '') + '> 启用自动备份（每次数据改动后自动上传，停止编辑 60 秒后同步）' +
-      '</label>' +
-    '</div>' +
-    '<div style="margin-top:24px;padding-top:14px;border-top:1px solid var(--line)">' +
-      '<div class="field" style="margin-bottom:8px"><label>数据管理</label></div>' +
-      '<div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">' +
+      '<div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--line)">' +
+        '<div class="field" style="margin-bottom:8px"><label>数据管理</label></div>' +
+        '<div class="hint" style="margin-bottom:10px">清空会删除全部产品、交易记录与汇率设置（可撤销：页面底部会出现「撤销」提示条）。</div>' +
         '<button type="button" id="s-clear" class="btn btn-danger btn-mini">🗑 清空全部数据</button>' +
-        '<span class="hint" style="font-size:12px;color:var(--ink-3)">删除所有产品、交易记录与汇率设置，不可恢复；建议先「导出」备份。</span>' +
       '</div>' +
     '</div>' +
-    '<div style="margin-top:16px;font-size:12px;color:var(--ink-3)">EcoCal v' + APP_VERSION + ' · 数据默认仅保存在本机浏览器（localStorage）；可在上方配置「云备份」实时同步到 WebDAV 网盘或 Gitee 仓库（推荐 Gitee：国内直连、网页无门槛）。</div>';
+    '<div class="set-pane" data-tab="security" style="display:none">' +
+      securityHTML() +
+    '</div>' +
+    '<div style="margin-top:16px;font-size:12px;color:var(--ink-3)">EcoCal v' + APP_VERSION + ' · 数据默认仅保存在本机浏览器（localStorage）；可在「备份」页配置自动备份到 WebDAV 网盘或 Gitee 仓库（推荐 Gitee：国内直连、网页无门槛）。</div>';
 }
 
 function openSettings() {
@@ -2528,6 +2567,39 @@ function openSettings() {
     saveState();
   };
 
+  /* ---- 备份提醒（未备份 > N 天提醒手动备份） ---- */
+  const remEnabled = $id('rem-enabled');
+  const remDays = $id('rem-days');
+  if (remEnabled) {
+    remEnabled.checked = !!(state.settings.backupReminder || {}).enabled;
+    remEnabled.onchange = () => {
+      state.settings.backupReminder = state.settings.backupReminder || {};
+      state.settings.backupReminder.enabled = remEnabled.checked;
+      saveState();
+    };
+  }
+  if (remDays) {
+    remDays.value = (state.settings.backupReminder && state.settings.backupReminder.days) || 7;
+    remDays.oninput = () => {
+      const v = parseInt(remDays.value, 10);
+      if (isFinite(v) && v > 0) {
+        state.settings.backupReminder = state.settings.backupReminder || {};
+        state.settings.backupReminder.days = v;
+        saveState();
+      }
+    };
+  }
+
+  /* ---- 设置页 Tab 切换：仅切换可见性（隐藏面板仍在 DOM 中，保存时照常读取） ---- */
+  const setTabs = document.querySelectorAll('.set-tab');
+  setTabs.forEach(tab => {
+    tab.onclick = () => {
+      const target = tab.dataset.tab;
+      setTabs.forEach(t => { t.classList.toggle('on', t === tab); });
+      document.querySelectorAll('.set-pane').forEach(p => { p.style.display = p.dataset.tab === target ? '' : 'none'; });
+    };
+  });
+
   modalOnOk = () => {
     const base = $id('s-base').value;
     const oldBase = state.settings.baseCurrency;
@@ -2588,7 +2660,27 @@ function openSettings() {
       if (!isFinite(cap) || cap < 0 || cap > 100) { alert('单一标的上限阈值必须在 0–100 之间（%）。'); return; }
       state.settings.singleAssetCap = cap;
     }
+    // 安全（PIN 锁）设置：勾选启用 → 立即用当前输入的 PIN 启用并加锁（开始生效）
+    const pinToggle = $id('s-pin-toggle');
+    if (pinToggle) {
+      if (pinToggle.checked) {
+        const pin = ($id('s-pin').value || '').replace(/\s/g, '');
+        const resetCode = $id('s-pin-reset').value.trim();
+        if (!/^\d{4,6}$/.test(pin)) { alert('请设置 4~6 位数字 PIN。'); return; }
+        if (!resetCode) { alert('请设置「重置口令」，忘记 PIN 时可凭它解锁。'); return; }
+        setPin(pin, resetCode);
+        pinLock(); // 立即加锁：保存后需重新输入才能看到数据
+        alert('PIN 锁已启用（即时生效）：请记住重置口令「' + resetCode + '」。');
+      } else if (pinEnabled()) {
+        // 取消勾选：必须先取消当前锁定（输入当前 PIN）才能关闭
+        const cur = prompt('关闭 PIN 锁需先验证当前 PIN：');
+        if (checkPin(cur)) { clearPin(); }
+        else { alert('PIN 不正确，已保留当前 PIN 锁。'); pinToggle.checked = true; }
+      }
+    }
     saveState(); renderAll(); closeModal();
+    // 若刚启用了 PIN 锁（modalOnOk 内已 pinLock），关闭保存后再显示遮罩以确保数据不可见
+    if (pinEnabled()) pinLock();
   };
 }
 
@@ -2907,6 +2999,50 @@ function bindBackupFlush() {
   } catch (e) { /* 无 DOM 环境（单元测试）跳过 */ }
 }
 
+/* ---------------- 备份提醒（未备份 > N 天提醒手动备份） ---------------- */
+/** 计算最近一次成功备份时间；没有任何成功备份记录时返回 null */
+function lastBackupTime() {
+  let latest = null;
+  [state.settings.webdav, state.settings.gitee].forEach(s => {
+    if (s && s.lastBackupAt) {
+      const t = new Date(s.lastBackupAt).getTime();
+      if (isFinite(t) && (latest == null || t > latest)) latest = t;
+    }
+  });
+  return latest;
+}/** 当前「自动备份」是否至少有一个目标已启用（webdav 或 gitee） */
+function anyAutoBackupEnabled() {
+  return !!((state.settings.webdav && state.settings.webdav.enabled) ||
+    (state.settings.gitee && state.settings.gitee.enabled));
+}
+/** 是否需要提醒手动备份：启用提醒且（未配置自动备份 或 自动备份连续失败）时，若超过 N 天未成功备份 → 提醒 */
+function needsBackupReminder() {
+  const rem = state.settings.backupReminder || {};
+  if (!rem.enabled) return false;
+  const days = Number(rem.days);
+  if (!(days > 0)) return false;
+  if (anyAutoBackupEnabled()) return false; // 有自动备份兜底 → 不打扰
+  const last = lastBackupTime();
+  if (last == null) return true; // 从未成功备份过 → 提醒
+  const elapsedDays = (Date.now() - last) / 86400000;
+  return elapsedDays >= days;
+}
+/** 每天在打开页面时检查一次：「未备份 N 天」时提醒手动备份 */
+function initBackupReminders() {
+  try {
+    const shownKey = 'ecocal.backup-reminder.' + todayStr(); // 每天只提醒一次
+    if (window.localStorage.getItem(shownKey)) return;
+    if (!needsBackupReminder()) return;
+    window.localStorage.setItem(shownKey, '1'); // 先标记，避免重复弹窗
+    confirmAction('备份提醒',
+      '您已超过 <b>' + (state.settings.backupReminder || {}).days + ' 天</b>没有成功备份数据。' +
+      '数据仅保存在本机浏览器，建议尽快手动备份（设置 → 备份 → 立即备份，或用「导出」保存一份）。', 
+      () => {
+        openExportModal(); // 点「去备份」直接打开导出面板（含 Excel / JSON 下载 / 复制）
+      }, '去备份');
+  } catch (e) { /* 无 DOM / localStorage 异常时静默 */ }
+}
+
 /** 立即备份（面板按钮用，返回是否成功） */
 async function manualWebdavBackup() {
   try {
@@ -3207,9 +3343,10 @@ function fallbackCopy(text, ok, fail) {
 function openExportModal() {
   if (!state.assets.length) { alert('暂无数据可导出。'); return; }
   const payload = buildExportPayload();
-  const html = '<div class="hint" style="margin-bottom:10px">两种保存方式任选：<b>下载</b>会存到「下载」文件夹；<b>复制</b>可粘贴到备忘录/云盘（推荐手机使用）。</div>' +
+  const html = '<div class="hint" style="margin-bottom:10px">三种方式任选：<b>下载 Excel</b> 便于对账/分享；<b>下载 .json</b> 是完整备份（可再导入）；<b>复制</b>可粘贴到备忘录/云盘（推荐手机使用）。</div>' +
     '<div style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap">' +
-      '<button type="button" id="exp-download" class="btn btn-primary">⬇ 下载 .json 文件</button>' +
+      '<button type="button" id="exp-xlsx" class="btn btn-primary">⬇ 下载 .xlsx（Excel）</button>' +
+      '<button type="button" id="exp-download" class="btn btn-ghost">⬇ 下载 .json 文件</button>' +
       '<button type="button" id="exp-copy" class="btn btn-ghost">📋 复制备份内容</button>' +
     '</div>' +
     '<div class="hint" id="exp-status" style="margin-bottom:6px"></div>' +
@@ -3217,8 +3354,253 @@ function openExportModal() {
       'style="width:100%;font-size:11px;font-family:ui-monospace,Consolas,monospace;border:1px solid var(--line);border-radius:10px;padding:10px;box-sizing:border-box;background:#fafafa;color:var(--ink-2)">' + esc(payload) + '</textarea>';
   openModal('导出备份', html, null, null);
   $id('modal-ok').classList.add('hidden'); // 导出面板用面板内按钮，不需要底部保存
+  $id('exp-xlsx').onclick = () => downloadXlsx();
   $id('exp-download').onclick = () => downloadJSON(payload);
   $id('exp-copy').onclick = () => copyText(payload, $id('exp-status'));
+}
+
+/* ---------------- 导出 Excel（.xlsx，无第三方依赖） ---------------- */
+/**
+ * 生成 Excel 工作簿（xlsx = OOXML + ZIP 容器，纯手写）：
+ * - sharedStrings.xml：全部文本去重后集中存放（UTF-8）
+ * - 三个工作表：持仓汇总 / 交易流水 / 按资产统计
+ * 不引入任何第三方库，在浏览器 Blob 中直接生成、下载。
+ */
+function buildXlsxExcel() {
+  const st = Calc.statistics(state.assets, state.trades, state.settings, {
+    liabilities: state.settings.liabilities, singleAssetCap: state.settings.singleAssetCap,
+  });
+  const base = st.base;
+
+  // 1) 收集三张表的行数据（预格式化字符串，便于 sharedStrings 去重）
+  const sheets = [];
+
+  // —— Sheet 1：持仓汇总 ——
+  const holdRows = [['资产名称', '类别', '币种', '持仓数量', '成本', '现价/汇率', '市值', '浮动盈亏', '已实现盈亏', '总盈亏', '持有天数', '年化（单利）', '占比']];
+  (st.detail || []).forEach(r => {
+    const pos = r.pos;
+    const annual = (pos.cost > 0 && pos.float != null && pos.days > 0)
+      ? ((pos.float / pos.cost) * 365 / pos.days * 100) : null;
+    holdRows.push([
+      r.asset.name,
+      (r.asset.subCategory || categoryLabel(r.asset.category)),
+      r.asset.currency,
+      pos.qty, pos.cost, r.asset.lastPrice != null ? r.asset.lastPrice : '',
+      pos.marketValue != null ? pos.marketValue : '',
+      pos.float, pos.realized, pos.totalProfit, pos.days,
+      annual != null ? (Math.round(annual * 100) / 100) : '',
+      r.sharePct != null ? (Math.round(r.sharePct * 10000) / 100) : '',
+    ]);
+  });
+  sheets.push({ name: '持仓汇总', rows: holdRows, digits: [3, 4, 5, 6, 7, 8, 9, 10, 12] });
+
+  // —— Sheet 2：交易流水 ——
+  const tradeRows = [['资产', '方向', '日期', '数量', '单价', '金额', '手续费', '备注', '录入方式']];
+  const modeLabel = m => ({ qty: '份数×单价', amount: '总金额', exchange: '兑换' }[m] || m || '');
+  [...state.trades].sort((x, y) => (x.date < y.date ? -1 : x.date > y.date ? 1 : 0)).forEach(t => {
+    const a = state.assets.find(a => a.id === t.assetId);
+    tradeRows.push([
+      a ? a.name : t.assetId,
+      t.type === 'buy' ? '买入' : '卖出',
+      t.date, t.quantity, t.price, t.quantity * t.price, t.fee || 0,
+      t.note || '', modeLabel(t.mode),
+    ]);
+  });
+  sheets.push({ name: '交易流水', rows: tradeRows, digits: [3, 4, 5, 6] });
+
+  // —— Sheet 3：按资产统计 ——
+  const statRows = [['资产', '类别', '币种', '市值（基准币种）', '成本（基准币种）', '浮动盈亏', '已实现', '总盈亏', '收益率', '年化（单利）', '持有天数', '占比']];
+  (st.detail || []).forEach(r => {
+    const pos = r.pos;
+    const annual = (pos.cost > 0 && pos.float != null && pos.days > 0)
+      ? ((pos.float / pos.cost) * 365 / pos.days * 100) : null;
+    statRows.push([
+      r.asset.name, (r.asset.subCategory || categoryLabel(r.asset.category)), r.asset.currency,
+      r.baseValue != null ? r.baseValue : '', r.baseCost != null ? r.baseCost : '',
+      r.baseFloat, r.baseRealized, r.baseFloat + r.baseRealized,
+      r.floatRate != null ? (Math.round(r.floatRate * 10000) / 100) : '',
+      annual != null ? (Math.round(annual * 100) / 100) : '',
+      pos.days,
+      r.sharePct != null ? (Math.round(r.sharePct * 10000) / 100) : '',
+    ]);
+  });
+  sheets.push({ name: '按资产统计', rows: statRows, digits: [3, 4, 5, 6, 7, 8, 10] });
+
+  // 2) 生成 sharedStrings（全部单元格文本去重）
+  const strMap = new Map();
+  const strOrder = [];
+  const siIndex = cell => {
+    const key = String(cell);
+    if (!strMap.has(key)) { strMap.set(key, strOrder.length); strOrder.push(key); }
+    return strMap.get(key);
+  };
+  sheets.forEach(sh => sh.rows.forEach(row => row.forEach(c => siIndex(c))));
+
+  let ssXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="' +
+    (sheets.reduce((n, sh) => n + sh.rows.length * sh.rows[0].length, 0)) + '" uniqueCount="' + strOrder.length + '">';
+  strOrder.forEach(s => { ssXml += '<si><t>' + xmlEsc(s) + '</t></si>'; });
+  ssXml += '</sst>';
+
+  // 3) 生成各工作表 XML
+  const sheetXml = (sh) => {
+    let xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+      '<sheetData>';
+    sh.rows.forEach((row, ri) => {
+      xml += '<row r="' + (ri + 1) + '">';
+      row.forEach((cell, ci) => {
+        const ref = colName(ci) + (ri + 1);
+        xml += '<c r="' + ref + '" t="s"><v>' + siIndex(cell) + '</v></c>';
+      });
+      xml += '</row>';
+    });
+    xml += '</sheetData></worksheet>';
+    return xml;
+  };
+  const sheetFiles = sheets.map(sh => ({ name: sh.name, data: sheetXml(sh) }));
+
+  // 4) ZI关于（OOXML 需要 [Content_Types], _rels, worksheet rels, workbook + sst）
+  const parts = [];
+  const CT = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+    '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+    '<Default Extension="xml" ContentType="application/xml"/>' +
+    '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
+    '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' +
+    '<Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' +
+    '<Override PartName="/xl/worksheets/sheet3.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' +
+    '<Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>' +
+    '</Types>';
+  parts.push({ name: '[Content_Types].xml', data: CT });
+  parts.push({ name: '_rels/.rels', data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+    '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>' +
+    '</Relationships>' });
+  parts.push({ name: 'xl/_rels/workbook.xml.rels', data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+    '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>' +
+    '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>' +
+    '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet3.xml"/>' +
+    '<Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>' +
+    '</Relationships>' });
+  parts.push({ name: 'xl/workbook.xml', data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" ' +
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
+    '<sheets>' +
+    sheetFiles.map((f, i) => '<sheet name="' + f.name + '" sheetId="' + (i + 1) + '" r:id="rId' + (i + 1) + '"/>').join('') +
+    '</sheets></workbook>' });
+  parts.push({ name: 'xl/sharedStrings.xml', data: ssXml });
+  sheetFiles.forEach((f, i) => parts.push({ name: 'xl/worksheets/sheet' + (i + 1) + '.xml', data: f.data }));
+
+  return zipBuild(parts);
+}
+
+/** ZIP（无压缩 STORE）写入为 Uint8Array */
+function zipBuild(parts) {
+  const enc = new TextEncoder();
+  const chunks = [];
+  const entries = [];
+  let size = 0; // 累计的本地文件区总长度
+  parts.forEach(p => {
+    const bytes = enc.encode(p.data);
+    const crc = crc32(bytes);
+    chunks.push(localFileHeader(p.name, bytes.length, crc));
+    chunks.push(bytes);
+    // 该条目的本地头偏移 = 此前已累计的长度
+    entries.push({ name: p.name, size: bytes.length, crc, offset: size });
+    size += 30 + enc.encode(p.name).length + bytes.length;
+  });
+  // 中央目录：每个条目先记自己的偏移，再拼进中央目录
+  const cdChunks = [];
+  entries.forEach(e => {
+    const cd = centralDirEntry(e.name, e.size, e.crc, e.offset);
+    cdChunks.push(cd);
+  });
+  const centralSize = cdChunks.reduce((s, c) => s + c.length, 0);
+  const centralOffset = size;
+  cdChunks.forEach(c => chunks.push(c));
+  const eocd = new Uint8Array(22);
+  const dv = new DataView(eocd.buffer);
+  dv.setUint32(0, 0x06054b50, true);
+  dv.setUint16(4, 0, true); dv.setUint16(6, 0, true);
+  dv.setUint16(8, entries.length, true); dv.setUint16(10, entries.length, true);
+  dv.setUint32(12, centralSize, true); dv.setUint32(16, centralOffset, true);
+  chunks.push(eocd);
+  const total = chunks.reduce((n, c) => n + c.length, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  chunks.forEach(c => { out.set(c, off); off += c.length; });
+  return out;
+}
+function localFileHeader(name, size, crc) {
+  const nb = new TextEncoder().encode(name);
+  const h = new Uint8Array(30 + nb.length);
+  const dv = new DataView(h.buffer);
+  dv.setUint32(0, 0x04034b50, true);   // local file header signature
+  dv.setUint16(4, 20, true);           // version needed
+  dv.setUint16(6, 0x0800, true);       // flags: UTF-8
+  dv.setUint16(8, 0, true);            // method: store
+  dv.setUint16(10, 0, true); dv.setUint16(12, 0, true);
+  dv.setUint32(14, crc, true);
+  dv.setUint32(18, size, true); dv.setUint32(22, size, true);
+  dv.setUint16(26, nb.length, true); dv.setUint16(28, 0, true);
+  h.set(nb, 30);
+  return h;
+}
+function centralDirEntry(name, size, crc, offset) {
+  const nb = new TextEncoder().encode(name);
+  const e = new Uint8Array(46 + nb.length);
+  const dv = new DataView(e.buffer);
+  dv.setUint32(0, 0x02014b50, true);
+  dv.setUint16(4, 20, true); dv.setUint16(6, 20, true);
+  dv.setUint16(8, 0x0800, true);
+  dv.setUint16(10, 0, true); dv.setUint16(12, 0, true); dv.setUint16(14, 0, true);
+  dv.setUint32(16, crc, true);
+  dv.setUint32(20, size, true); dv.setUint32(24, size, true);
+  dv.setUint16(28, nb.length, true); dv.setUint16(30, 0, true);
+  dv.setUint16(32, 0, true); dv.setUint16(34, 0, true); dv.setUint16(36, 0, true);
+  dv.setUint32(38, 0, true);
+  dv.setUint32(42, offset, true);
+  e.set(nb, 46);
+  return e;
+}
+/** CRC32（ZIP 用，无第三方依赖） */
+function crc32(bytes) {
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < bytes.length; i++) {
+    c ^= bytes[i];
+    for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xEDB88320 & -(c & 1));
+  }
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+function colName(i) {
+  let s = '';
+  i++;
+  while (i > 0) { const r = (i - 1) % 26; s = String.fromCharCode(65 + r) + s; i = Math.floor((i - 1) / 26); }
+  return s;
+}
+function xmlEsc(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+}
+function numberOfRows(rows) { return rows.length; }
+/** 触发浏览器下载 .xlsx 文件 */
+function downloadXlsx() {
+  const bytes = buildXlsxExcel();
+  const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'ecocal-export-' + todayStr() + '.xlsx';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+function categoryLabel(cat) {
+  return ({ stock: '股票', fund: '基金', bond: '债券', deposit: '存款', wealth: '理财', insurance: '保险',
+    fx: '外币', commodity: '商品', crypto: '数字货币', other: '其他' })[cat] || cat;
 }
 
 /** 解析校验备份文本并弹出覆盖确认；通过后写入 state 与 localStorage */
@@ -3274,14 +3656,145 @@ function openImportModal() {
   $id('imp-file').onclick = () => $id('import-input').click();
 } 
 
+/* ---------------- 撤销（Undo）支持 ---------------- */
+/**
+ * 删除/清空属于破坏性操作：在确认执行后保留一份快照，页面底部显示「撤销」提示条，
+ * 点击可在本会话内恢复被删除的数据（刷新页面后不可恢复，避免误导）。
+ * 只存最近 1 次删除快照（内存，不落盘）。
+ */
+let undoSnapshot = null;   // { label, assets, trades, valuations, settings }
+let undoToastEl = null;
+
+function undoWrap(label, fn) {
+  confirmAction('确认' + label, label + '，此操作可撤销（本次会话内）。确定继续吗？', () => {
+    // 先快照再执行（执行内部会 saveState/renderAll）
+    undoSnapshot = {
+      label,
+      assets: JSON.parse(JSON.stringify(state.assets)),
+      trades: JSON.parse(JSON.stringify(state.trades)),
+      valuations: JSON.parse(JSON.stringify(state.valuations)),
+      settings: JSON.parse(JSON.stringify(state.settings)),
+    };
+    fn();
+    showUndoToast(label);
+  }, label);
+}
+
+function showUndoToast(label) {
+  const old = undoToastEl;
+  if (old && old.parentNode) old.parentNode.removeChild(old);
+  const bar = document.createElement('div');
+  bar.className = 'undo-toast';
+  bar.innerHTML = '<span>' + label + '（本次会话可撤销）</span>' +
+    '<button type="button" class="btn btn-mini" id="undo-btn">撤销</button>';
+  if (document.body && document.body.appendChild) document.body.appendChild(bar);
+  undoToastEl = bar;
+  // 撤销按钮：优先用文档级查询（测试桩 createElement 无 querySelector），失败再回退查询
+  let btn = null;
+  try { btn = (bar.querySelector ? bar.querySelector('#undo-btn') : null) || document.getElementById('undo-btn'); }
+  catch (e) { btn = document.getElementById('undo-btn'); }
+  if (btn) {
+    btn.onclick = () => {
+      undoApply();
+      if (bar.parentNode) bar.parentNode.removeChild(bar);
+      undoToastEl = null;
+    };
+  }
+  // 10 秒后自动消失
+  setTimeout(() => {
+    if (undoToastEl === bar && bar.parentNode) {
+      bar.parentNode.removeChild(bar);
+      undoToastEl = null;
+    }
+  }, 10000);
+}
+
+/** 应用撤销：恢复最近一次删除/清空的快照；返回被应用的快照（无则 null） */
+function undoApply() {
+  if (!undoSnapshot) return null;
+  const applied = undoSnapshot;
+  state.assets = undoSnapshot.assets;
+  state.trades = undoSnapshot.trades;
+  state.valuations = undoSnapshot.valuations;
+  state.settings = undoSnapshot.settings;
+  undoSnapshot = null;
+  saveState(); renderAll();
+  return applied;
+}
+
 function clearAll() {
-  confirmAction('清空全部数据', '将删除所有产品、交易记录与汇率设置，此操作不可撤销。确定清空吗？', () => {
+  undoWrap('清空全部数据', () => {
     state.assets = [];
     state.trades = [];
     state.valuations = [];
     state.settings = Object.assign({}, DEFAULT_SETTINGS);
     saveState(); renderAll();
-  }, '清空');
+  });
+}
+
+/* ---------------- 启动 PIN 锁（安全） ---------------- */
+/**
+ * PIN 锁设计：
+ * - PIN 绝不进 state / 备份文件 / 导出；本地只存「哈希」与重置冷却，专用键：
+ *     ecocal.pin.hash —— 摘要（防直接查看 localStorage 得知明文）
+ *     ecocal.pin.cooldown —— 忘记 PIN 逃生门的冷却截止（未设置则为 0）
+ *   「设置 → 安全」开启后立即用当前输入设置 PIN，此后启动 / 切回前台需解锁。
+ * - 解锁遮罩 #pin-lock 用固定定位铺满视口，z-index 高于所有内容（含模态框），
+ *   解锁前即使页面已被渲染也不可见（遮罩不透）
+ * - 忘记 PIN 逃生门：进入「安全 → 忘记 PIN」输入一个「重置口令」（安装/设置 PIN 时
+ *   由用户填写的自定义英文口令），正确后清除 PIN 并重新进入设置；防止误锁无法进入。
+ */
+const PIN_HASH_KEY = 'ecocal.pin.hash';
+const PIN_COOLDOWN_KEY = 'ecocal.pin.cooldown';
+/* 非加密摘要（浏览器无 WebCrypto 的 file:// 环境可用）：SHA-256 仅示意，本地仅作混淆 */
+function pinHash(pin) {
+  let h = 5381;
+  const salt = 'EcoCal::' + pin;
+  for (let i = 0; i < salt.length; i++) { h = ((h << 5) + h + salt.charCodeAt(i)) | 0; }
+  return 'h' + (h >>> 0).toString(36);
+}
+function pinEnabled() { return !!state.settings.pinEnabled && !!localStorage.getItem(PIN_HASH_KEY); }
+function setPin(pin, resetCode) {
+  localStorage.setItem(PIN_HASH_KEY, pinHash(pin));
+  localStorage.setItem(PIN_COOLDOWN_KEY, String(Date.now() + 30 * 60 * 1000)); // 重置冷却 30 分钟
+  state.settings.pinEnabled = true;
+  state.settings.pinResetCode = resetCode; // 仅本地解密用，不进备份/导出
+  saveState();
+}
+function clearPin() {
+  localStorage.removeItem(PIN_HASH_KEY);
+  localStorage.removeItem(PIN_COOLDOWN_KEY);
+  state.settings.pinEnabled = false;
+  delete state.settings.pinResetCode;
+  saveState();
+}
+function checkPin(pin) { return !!pin && pinHash(pin) === localStorage.getItem(PIN_HASH_KEY); }
+function pinLocked() { return pinEnabled() && !sessionStorage.getItem('ecocal.pin.unlocked'); }
+function pinLock() { sessionStorage.removeItem('ecocal.pin.unlocked'); const ov = $id('pin-lock'); if (ov) ov.classList.remove('hidden'); }
+function pinUnlock() {
+  sessionStorage.setItem('ecocal.pin.unlocked', '1');
+  const ov = $id('pin-lock'); if (ov) ov.classList.add('hidden');
+}
+
+/** 设置「安全」段（PIN 锁）——插入「数据管理」段之前 */
+function securityHTML() {
+  const on = pinEnabled();
+  return '<div style="margin-top:24px;padding-top:14px;border-top:1px solid var(--line)">' +
+    '<div class="field" style="margin-bottom:8px"><label>安全（启动 PIN 锁）</label></div>' +
+    (on
+      ? '<label style="font-size:12px;color:var(--ink-2);display:inline-flex;gap:6px;align-items:center">' +
+          '<input type="checkbox" id="s-pin-toggle" checked> 已开启启动 PIN 锁（启动与切回前台需输入 PIN）</label>' +
+        '<div class="hint" style="margin-top:6px">修改 PIN：取消勾选后输入新 PIN 保存即可重置。</div>'
+      : '<label style="font-size:12px;color:var(--ink-2);display:inline-flex;gap:6px;align-items:center">' +
+          '<input type="checkbox" id="s-pin-toggle"> 启用启动 PIN 锁（启动与切回前台需输入 PIN）</label>') +
+    '<div id="s-pin-setup" style="margin-top:8px">' +
+      '<div class="field"><label>PIN（4~6 位数字）</label>' +
+      '<input id="s-pin" type="password" inputmode="numeric" autocomplete="new-password" maxlength="6" placeholder="如 123456"></div>' +
+      '<div class="field"><label>重置口令（忘记 PIN 时用于解除锁定，请记牢）</label>' +
+      '<input id="s-pin-reset" type="text" autocomplete="off" placeholder="如 my-reset-word"></div>' +
+      '<div class="hint">PIN 只保存在本机浏览器；不会进入备份文件 / 导出内容。忘记 PIN 时在启动遮罩点「忘记 PIN」输入重置口令即可解锁。</div>' +
+    '</div>' +
+  '</div>';
 }
 
 /* ---------------- 顶部吸附定位（Tab / 筛选栏） ---------------- */
@@ -3313,6 +3826,46 @@ function bindEvents() {
     const tabsEl = document.querySelector('#main-tabs');
     if (topbarEl) resizeObserver.observe(topbarEl);
     if (tabsEl) resizeObserver.observe(tabsEl);
+  }
+
+  // ---- 启动 PIN 锁：遮罩交互 ----
+  const pinUnlockBtn = $id('pin-unlock-btn');
+  if (pinUnlockBtn) {
+    pinUnlockBtn.onclick = () => {
+      const pin = ($id('pin-input').value || '').replace(/\s/g, '');
+      const errEl = $id('pin-err');
+      if (checkPin(pin)) { errEl.textContent = ''; pinUnlock(); }
+      else { errEl.textContent = 'PIN 不正确，请重试。'; }
+      $id('pin-input').value = '';
+    };
+    $id('pin-input').onkeydown = (e) => { if (e.key === 'Enter') pinUnlockBtn.onclick(); };
+    $id('pin-forgot-btn').onclick = () => {
+      const resetCode = (state.settings.pinResetCode || '').trim();
+      if (!resetCode) { $id('pin-err').textContent = '本设备未设置重置口令，无法通过忘记 PIN 解锁。'; return; }
+      const answer = prompt('请输入设置 PIN 时填写的「重置口令」，正确后清除 PIN 锁：');
+      if (answer !== null && String(answer).trim() === resetCode) {
+        clearPin();
+        $id('pin-err').textContent = '';
+        $id('pin-input').value = '';
+        pinUnlock();
+        alert('PIN 锁已清除，请到「设置 → 安全」重新设置。');
+      } else if (answer !== null) {
+        $id('pin-err').textContent = '重置口令不正确。';
+      }
+    };
+    // 切回前台（浏览器切后台再回来 / 锁屏）自动重新上锁
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        sessionStorage.removeItem('ecocal.pin.unlocked');
+      } else if (pinEnabled() && !sessionStorage.getItem('ecocal.pin.unlocked')) {
+        $id('pin-input').value = '';
+        $id('pin-err').textContent = '';
+        const ov = $id('pin-lock'); if (ov) ov.classList.remove('hidden');
+      }
+    });
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+      window.addEventListener('pagehide', () => sessionStorage.removeItem('ecocal.pin.unlocked'));
+    }
   }
 
   $id('btn-add').onclick = () => openAssetForm(null);
@@ -3348,11 +3901,10 @@ function bindEvents() {
       case 'deleteTrade': {
         const t = state.trades.find(x => x.id === btn.dataset.id);
         if (!t) return;
-        confirmAction('删除交易记录', '将删除「' + (t.type === 'buy' ? '买入' : '卖出') + ' · ' + t.date +
-          ' · ' + fmtQty(t.quantity) + ' @ ' + fmtQty(t.price) + '」，删除后持仓与盈亏将自动重算。确定吗？', () => {
+        undoWrap('删除交易记录', () => {
           state.trades = state.trades.filter(x => x.id !== t.id);
           saveState(); renderAll();
-        }, '删除');
+        });
         break;
       }
       case 'refreshQuote':
@@ -3371,13 +3923,12 @@ function bindEvents() {
         break;
       }
       case 'deleteAsset':
-        confirmAction('删除产品', '将删除「' + asset.name + '」及其下 ' +
-          state.trades.filter(t => t.assetId === asset.id).length + ' 笔交易记录，且不可恢复。确定删除吗？', () => {
+        undoWrap('删除产品', () => {
           state.assets = state.assets.filter(a => a.id !== asset.id);
           state.trades = state.trades.filter(t => t.assetId !== asset.id);
           expanded.delete(asset.id);
           saveState(); renderAll();
-        }, '删除');
+        });
         break;
     }
   });
@@ -3480,7 +4031,7 @@ const HELP_HTML = ''
   + '<section class="help-section"><h4>如何使用（v6）</h4><ol>'
   + '<li><b>添加产品</b>：点右上角「＋ 添加产品」，只需填写<b>基本信息</b>（名称、大类小类、币种等）。选「股票」时多一步：填写股票代码（自动识别市场/币种/名称，直接进监察表）；选「外币」时选择外币币种（以人民币买卖，按汇率计算收益）。无需填写本金——所有资金进出都通过买卖记录。</li>'
   + '<li><b>记录买卖</b>：卡片上点「＋ 买入 / − 卖出」逐笔记账。每笔支持两种录入方式：<b>份数×单价</b>（金额自动算，股票默认）或<b>总金额</b>（份额自动折算，基金等默认）。<b>外币</b>另有<b>兑换</b>方式：买入填「花费人民币 + 买入外币」、卖出填「收回人民币 + 卖出外币」，汇率自动反推。卖出时系统自动校验不超持仓。</li>'
-  + '<li><b>维护当前市值</b>：股票点「✎ 现价」填当前股价（或「⟳ 刷新行情」联网获取）；基金/存款/外币等点「✎ 市值」直接填<b>当前持仓总金额</b>，系统自动折算单位价值。</li>'
+  + '<li><b>维护当前市值</b>：股票点「✎ 现价」填当前股价（或「⟳ 刷新行情」联网获取）；基金/存款/外币等点「✎ 市值」直接填<b>当前持仓总金额</b>，系统自动折算单位价值。手动录入的数值会原样保存（不做四舍五入），显示保留更多小数，避免资产价值被悄无声息地改掉。</li>'
   + '<li><b>查看指标</b>：每张卡片显示持仓金额/数量、累计投入、浮动盈亏、已实现盈亏、总盈亏与年化（近似）；展开「查看记录」可见逐笔明细与（股票）近期走势。</li>'
   + '<li><b>统计与图表</b>：统计页分四层——①<b>核心仪表盘</b>（总市值 / 净资产 / 总投入本金 / 总浮动盈亏与浮动盈亏率 / 已实现盈亏 / 总盈亏 / 现金 vs 风险资产，比率口径均已标注）；②<b>配置与结构</b>（资产类别 / 市场 / 币种 三类横向条形图，金额 + 占比）；③<b>集中度</b>（单一标的、Top5 / Top10 占比与超限提示，上限阈值可在设置中调整）；④<b>持仓明细表</b>（按市值降序，含当日盈亏等指标）。另有组合走势（市值 / 收益 / 收益率 / 回撤多模式）与盈亏构成视图。产品页提供下拉筛选与排序（市值 / 年化 / 收益率 / 持有天数）。</li>'
   + '<li><b>多币种与汇率</b>：在「设置」中维护汇率（可联网获取或手动填写），跨币种统计统一换算为基准币种；缺汇率的币种不计入总额并会提醒。</li>'
@@ -3568,6 +4119,10 @@ function init() {
   updateStickyOffsets();
   // 云备份：页面切后台/关闭时立即同步未上传的改动（防抖窗口内不等满 60s）
   bindBackupFlush();
+  // 备份提醒：每天最多一次（未配置自动备份或自动备份连续失败，超过 N 天未成功备份时提醒）
+  initBackupReminders();
+  // 启动 PIN 锁：已启用时显示遮罩（login 前不可见数据）
+  if (pinEnabled()) pinLock();
   // 直链支持：`?tab=stats` 直接打开「统计」页（便于分享/快速查看）
   if (typeof location !== 'undefined' && location.search.indexOf('tab=stats') > -1) {
     switchTab('stats');
@@ -3602,7 +4157,7 @@ if (document.readyState === 'loading') {
 window.__EcoCal = {
   APP_VERSION, Calc, state, uid, round2, roundQty, roundPrice, dayDiff, todayStr, seedDemo, loadState, saveState,
   fetchLatestRates, applyLatestRates, RISK_LEVELS, SORT_OPTIONS, CATEGORIES, FX_CURRENCIES,
-  openSettings, openAssetForm, openTradeForm, openHelp,
+  openSettings, openAssetForm, openTradeForm, openHelp, settingsHTML,
   submitTrade, submitAsset,
   renderAll, renderList,
   switchTab, setTrendMode,
@@ -3613,6 +4168,14 @@ window.__EcoCal = {
   webdavBackup, manualWebdavBackup, manualWebdavRestore,
   giteeBackup, manualGiteeBackup, manualGiteeRestore,
   saveGate, saveGateReal, gateFlush, runBackupOnce, clearBackupTimers,
+  // 备份提醒（供测试/调试）
+  initBackupReminders, needsBackupReminder, lastBackupTime, anyAutoBackupEnabled,
+  // PIN 锁（供测试/调试）
+  pinHash, pinEnabled, setPin, clearPin, checkPin, pinLock, pinUnlock, pinLocked, securityHTML,
+  // 撤销（供测试/调试）
+  undoWrap, undoApply, undoSnapshot,
+  // 导出 Excel（供测试/调试）
+  buildXlsxExcel, downloadXlsx,
 };
 
 })();

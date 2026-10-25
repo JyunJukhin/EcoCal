@@ -140,6 +140,19 @@
   </div>
 </div>
 
+<!-- 启动 PIN 锁遮罩（锁定时不显示任何资产数据） -->
+<div class="pin-lock hidden" id="pin-lock">
+  <div class="pin-lock-box">
+    <div class="pin-lock-logo">🔒</div>
+    <h3>EcoCal 已锁定</h3>
+    <p class="pin-lock-tip">请输入 PIN 解锁（启动或从后台返回时需验证）</p>
+    <input id="pin-input" type="password" inputmode="numeric" autocomplete="off" maxlength="6" placeholder="输入 PIN">
+    <div class="pin-lock-err" id="pin-err"></div>
+    <button id="pin-unlock-btn" class="btn btn-primary" style="width:100%">解锁</button>
+    <button id="pin-forgot-btn" class="btn btn-ghost btn-mini" style="margin-top:10px">忘记 PIN？</button>
+  </div>
+</div>
+
 <input type="file" id="import-input" accept="application/json,.json" class="hidden">
 
 <script src="js/app.js"></script>
