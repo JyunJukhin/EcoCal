@@ -1,4 +1,4 @@
-/** e2e：安全页显示 + PIN 全流程（设置→锁定→解锁→重置→关闭），含后台返回重新上锁 */
+/** e2e：安全 Tab（设置页分 Tab）+ PIN 全流程（设置→锁定→解锁→重置→关闭），含后台返回重新上锁 */
 import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -60,24 +60,25 @@ try {
   await sleep(1400);
   check('页面就绪且有演示数据', await evaluate(`!!window.__EcoCal && window.__EcoCal.state.assets.length === 7`));
 
-  // 1. 打开设置 → 安全 Tab → 内容非空
+  // 1. 打开设置 → 安全 Tab（分 Tab：点击安全 Tab 后安全分区显示）
   await evaluate(`window.__EcoCal.openSettings()`);
   await sleep(400);
-  check('设置有 4 个 Tab', await evaluate(`document.querySelectorAll('.set-tab').length === 4`));
-  await evaluate(`(() => { document.querySelectorAll('.set-tab').forEach(t => { if (t.dataset.tab === 'security') t.click(); }); return true; })()`);
-  await sleep(300);
+  check('设置面板：4 个 Tab', await evaluate(`document.querySelectorAll('.set-tab').length === 4`));
+  await evaluate(`Array.from(document.querySelectorAll('.set-tab')).find(t => t.dataset.tab === 'security').click()`);
+  await sleep(200);
+  check('设置面板：安全分区存在', await evaluate(`!!document.querySelector('.settings-section[data-section="security"]')`));
   const secInfo = JSON.parse(await evaluate(`(() => {
-    const sec = Array.from(document.querySelectorAll('.set-pane')).find(p => p.dataset.tab === 'security');
+    const sec = document.querySelector('.settings-section[data-section="security"]');
     return JSON.stringify({
-      exists: !!sec,
       display: sec ? getComputedStyle(sec).display : null,
+      visible: sec ? !sec.classList.contains('hidden') : false,
       text: sec ? sec.textContent.trim().slice(0, 60) : '',
       hasToggle: !!document.getElementById('s-pin-toggle'),
     });
   })()`));
-  check('安全 Tab：pane 存在且可见', secInfo.exists && secInfo.display === 'block', secInfo.display);
-  check('安全 Tab：有 PIN 开关', secInfo.hasToggle === true);
-  check('安全 Tab：内容非空（含文字）', (secInfo.text || '').includes('PIN'), secInfo.text);
+  check('安全分区：点击 Tab 后可见', secInfo.visible === true, String(secInfo.visible));
+  check('安全分区：有 PIN 开关', secInfo.hasToggle === true);
+  check('安全分区：内容非空（含文字）', (secInfo.text || '').includes('PIN'), secInfo.text);
 
   // 2. 开启 PIN：输入 PIN 与重置口令 → 保存
   await evaluate(`(() => {
@@ -119,8 +120,8 @@ try {
   // 6. 关闭 PIN（取消勾选 → prompt 验证当前 PIN）
   await evaluate(`window.__EcoCal.openSettings()`);
   await sleep(400);
-  await evaluate(`(() => { document.querySelectorAll('.set-tab').forEach(t => { if (t.dataset.tab === 'security') t.click(); }); return true; })()`);
-  await sleep(300);
+  await evaluate(`Array.from(document.querySelectorAll('.set-tab')).find(t => t.dataset.tab === 'security').click()`);
+  await sleep(200);
   const pinWasChecked = await evaluate(`document.getElementById('s-pin-toggle').checked === true`);
   check('重开设置：PIN 开关保持勾选', pinWasChecked === true);
   // modalOnOk 的取消分支用 window.prompt（桩返回 'reset-word-ok'，但需要当前 PIN 123456）

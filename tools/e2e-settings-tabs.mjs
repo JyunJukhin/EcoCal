@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /*
- * e2e-settings-tabs.mjs —— 设置页分 Tab + 备份提醒 浏览器端到端验证
+ * e2e-settings-tabs.mjs —— 设置页分 Tab（汇率与行情/统计/备份/安全）+ 备份提醒 浏览器端到端验证
  * 用法：node tools/e2e-settings-tabs.mjs  （需先起 node tools/serve.mjs . 8123）
  * 依赖：headless Chrome + CDP（Node 24 内置 WebSocket），无第三方依赖
  */
@@ -90,18 +90,17 @@ try {
   const exprTabInfo = [
     "(() => {",
     "  const tabs = Array.from(document.querySelectorAll('.set-tab'));",
-    "  const panes = Array.from(document.querySelectorAll('.set-pane'));",
+    "  const sections = Array.from(document.querySelectorAll('.settings-section'));",
     "  const basic = tabs.find(t => t.dataset.tab === 'basic');",
-    "  const backup = tabs.find(t => t.dataset.tab === 'backup');",
-    "  const basicPane = document.querySelector('.set-pane[data-tab=\"basic\"]');",
-    "  const backupPane = document.querySelector('.set-pane[data-tab=\"backup\"]');",
+    "  const basicSec = sections.find(s => s.dataset.section === 'basic');",
+    "  const backupSec = sections.find(s => s.dataset.section === 'backup');",
     "  return JSON.stringify({",
     "    tabCount: tabs.length,",
     "    tabNames: tabs.map(t => t.dataset.tab),",
-    "    paneCount: panes.length,",
-    "    basicOn: basic && basic.classList.contains('on'),",
-    "    basicVisible: basicPane && basicPane.style.display !== 'none',",
-    "    backupHidden: backupPane && backupPane.style.display === 'none',",
+    "    sectionCount: sections.length,",
+    "    basicOn: !!basic && basic.classList.contains('on'),",
+    "    basicVisible: !!basicSec && !basicSec.classList.contains('hidden'),",
+    "    backupHidden: !!backupSec && backupSec.classList.contains('hidden'),",
     "    hasRemEnabled: !!document.getElementById('rem-enabled'),",
     "    hasRemDays: !!document.getElementById('rem-days'),",
     "    hasSclear: !!document.getElementById('s-clear'),",
@@ -114,7 +113,7 @@ try {
   const tabInfo = await evaluate(exprTabInfo);
   const t = JSON.parse(tabInfo);
   check('设置页：4 个 Tab（basic/stats/backup/security）', t.tabCount === 4 && t.tabNames.join(',') === 'basic,stats,backup,security', t.tabNames.join(','));
-  check('设置页：4 个 pane', t.paneCount === 4, String(t.paneCount));
+  check('设置页：4 个分区', t.sectionCount === 4, String(t.sectionCount));
   check('设置页：默认 basic 选中且显示、backup 隐藏', t.basicOn && t.basicVisible && t.backupHidden);
   check('设置页：备份页含备份提醒开关与天数', t.hasRemEnabled && t.hasRemDays);
   check('设置页：备份页含数据管理（清空）', t.hasSclear);
@@ -129,14 +128,14 @@ try {
     "  return JSON.stringify({",
     "    backupOn: backupTab.classList.contains('on'),",
     "    basicOn: document.querySelector('.set-tab[data-tab=\"basic\"]').classList.contains('on'),",
-    "    backupVisible: document.querySelector('.set-pane[data-tab=\"backup\"]').style.display !== 'none',",
-    "    basicHidden: document.querySelector('.set-pane[data-tab=\"basic\"]').style.display === 'none',",
+    "    backupVisible: !document.querySelector('.settings-section[data-section=\"backup\"]').classList.contains('hidden'),",
+    "    basicHidden: document.querySelector('.settings-section[data-section=\"basic\"]').classList.contains('hidden'),",
     "  });",
     "})()",
   ].join('\n');
   const switchInfo = await evaluate(exprSwitch);
   const s2 = JSON.parse(switchInfo);
-  check('Tab 切换：点「备份」→ 高亮与 pane 显隐正确', s2.backupOn && !s2.basicOn && s2.backupVisible && s2.basicHidden);
+  check('Tab 切换：点「备份」→ 高亮与分区显隐正确', s2.backupOn && !s2.basicOn && s2.backupVisible && s2.basicHidden);
 
   // 4. 备份提醒开关：勾选 → 写 settings + 保存
   const exprSetRem = [

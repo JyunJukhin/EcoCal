@@ -445,10 +445,19 @@ input,select,textarea{font-family:inherit;font-size:14px;color:var(--ink)}
 .undo-toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);z-index:250;background:#2c2c2e;color:#fff;font-size:13px;border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.28);display:flex;align-items:center;gap:14px;padding:10px 16px;max-width:92vw}
 .undo-toast .btn{background:#fff;color:#2c2c2e;border:none}
 
-/* ============ 设置页 Tab ============ */
-.settings-tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;border-bottom:1px solid var(--line);padding-bottom:10px}
+/* ============ 设置面板：Tab 切换 + 分区 ============ */
+.settings-tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px;border-bottom:1px solid var(--line);padding-bottom:12px}
 .set-tab{background:transparent;border:1px solid var(--line);border-radius:999px;padding:6px 14px;font-size:13px;color:var(--ink-2);cursor:pointer;transition:all .15s}
 .set-tab:hover{border-color:var(--accent);color:var(--accent)}
 .set-tab.on{background:var(--accent);border-color:var(--accent);color:#fff}
-.set-pane{padding-top:2px}
-.set-pane .field{margin-bottom:10px}
+.settings-sections{display:flex;flex-direction:column;gap:0}
+.settings-section{
+  margin:22px 0 0;padding:16px 0 0;border-top:1px solid var(--line);
+}
+.settings-section:first-child{margin-top:0;padding-top:0;border-top:none}
+.settings-sec-title{
+  font-size:13px;font-weight:650;color:var(--ink);
+  margin:0 0 10px;display:flex;align-items:center;gap:6px;
+}
+.settings-sec-title::before{content:'';display:block;width:3px;height:13px;border-radius:2px;background:var(--accent)}
+.settings-section .field{margin-bottom:10px}

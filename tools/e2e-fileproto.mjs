@@ -61,28 +61,28 @@ try {
   await evaluate(`Array.from(document.querySelectorAll('.set-tab')).find(t => t.dataset.tab === 'security').click()`);
   await sleep(200);
   const sec = await evaluate(`(() => {
-    const pane = Array.from(document.querySelectorAll('.set-pane')).find(p => p.dataset.tab === 'security');
-    return JSON.stringify({ exists: !!pane, len: pane ? pane.textContent.trim().length : -1,
+    const secEl = document.querySelector('.settings-section[data-section="security"]');
+    return JSON.stringify({ exists: !!secEl, len: secEl ? secEl.textContent.trim().length : -1,
       pinToggle: !!document.getElementById('s-pin-toggle'),
       pin: !!document.getElementById('s-pin'), reset: !!document.getElementById('s-pin-reset'),
-      html: pane ? pane.innerHTML.slice(0, 80) : '' });
+      html: secEl ? secEl.innerHTML.slice(0, 80) : '' });
   })()`);
   const s = JSON.parse(sec);
-  check('安全 pane 存在且有内容', s.exists === true && s.len > 20, 'len=' + s.len);
+  check('安全 Tab：pane 存在且有内容', s.exists === true && s.len > 20, 'len=' + s.len);
   check('s-pin-toggle / s-pin / s-pin-reset 存在', s.pinToggle && s.pin && s.reset);
   const sec2 = await evaluate(`(() => {
     const icon = document.querySelector('.set-tab[data-tab="security"]');
     return JSON.stringify({
       tabText: icon ? icon.textContent.trim() : '',
-      paneLen: Array.from(document.querySelectorAll('.set-pane')).find(p => p.dataset.tab === 'security').textContent.trim().length,
+      paneLen: document.querySelector('.settings-section[data-section="security"]').textContent.trim().length,
     });
   })()`);
   const s2 = JSON.parse(sec2);
   check('安全 Tab 含「安全」字样', s2.tabText.includes('安全'), s2.tabText);
-  check('安全 pane 内容全量（截取200字）', s2.paneLen > 100, 'len=' + s2.paneLen);
+  check('安全 Tab 内容全量（截取200字）', s2.paneLen > 100, 'len=' + s2.paneLen);
 
-  console.log(`\n结果：${pass}/10 项通过`);
-  process.exit(pass >= 8 ? 0 : 1);
+  console.log(`\n结果：${pass}/7 项通过`);
+  process.exit(pass >= 7 ? 0 : 1);
 } catch (e) {
   console.error('E2E 异常：', e.message);
   process.exit(1);

@@ -1195,24 +1195,26 @@ assert(xlsxClicked, 'Excel：锚点 click 被触发');
   }
 }
 
-/* ---- 12. 设置页 Tab + 备份提醒面板 ---- */
+/* ---- 12. 设置面板：Tab 切换 + 备份提醒面板 ---- */
 {
   const savedState = JSON.stringify(EcoCal.state);
   const savedSettings = JSON.parse(savedState).settings;
   const html = EcoCal.settingsHTML(savedSettings);
-  assert(html.includes('class="set-tab on" data-tab="basic"'), '设置页：四 Tab（基础）已渲染且默认选中');
+  assert(html.includes('class="set-tab on" data-tab="basic"'), '设置页：四 Tab（汇率与行情）已渲染且默认选中');
   assert(html.includes('data-tab="stats"') && html.includes('data-tab="backup"') && html.includes('data-tab="security"'), '设置页：四 Tab（统计/备份/安全）齐备');
-  assert(html.includes('class="set-pane" data-tab="basic"') && html.includes('data-tab="security"'), '设置页：四个 pane 存在');
+  assert(html.includes('class="settings-section" data-section="basic"') && html.includes('data-section="stats"') && html.includes('data-section="backup"') && html.includes('data-section="security"'), '设置页：四个分区（汇率与行情/统计/备份/安全）齐备');
+  assert(html.includes('class="settings-sec-title"') && html.includes('settings-sections'), '设置页：分区标题与容器存在');
   assert(html.includes('id="rem-enabled"') && html.includes('id="rem-days"'), '设置页：备份提醒开关与天数输入存在');
-  assert(html.includes('id="wd-backup"') && html.includes('id="g-backup"'), '设置页：备份页含 WebDAV 与 Gitee 面板');
+  assert(html.includes('id="wd-backup"') && html.includes('id="g-backup"'), '设置页：备份分区含 WebDAV 与 Gitee 面板');
   assert(html.includes('id="s-clear"'), '设置页：数据管理（清空）保留');
-  assert(html.includes('id="s-pin-toggle"'), '设置页：安全页含 PIN 设置');
+  assert(html.includes('id="s-pin-toggle"'), '设置页：安全分区含 PIN 设置');
+  assert(html.includes('id="s-rf"') && html.includes('id="s-liab"') && html.includes('id="s-cap"'), '设置页：统计分区含三个数值输入');
 
-  // 打开设置面板 → 读入 Tab 绑定（openSettings 里挂 onclick）
+  // 打开设置面板 → 读入绑定（openSettings 里挂 onclick）
   const savedConfirm = globalThis.confirmAction;
   const savedModal = globalThis.$id;
   const savedGEB = document.getElementById;
-  // openSettings 会 openModal + 大量 $id 绑定；测试桩提供元素即可
+  const savedQSA = document.querySelectorAll;
   const setEls = {};
   ['s-base','s-fetch','s-autofetch','s-updated','s-autoquote','s-refresh-all','s-rf','s-liab','s-cap',
    'wd-url','wd-user','wd-pass','wd-dir','wd-test','wd-backup','wd-restore','wd-clear-pass','wd-status','wd-enabled',
@@ -1222,21 +1224,19 @@ assert(xlsxClicked, 'Excel：锚点 click 被触发');
     if (id === 'rem-days') setEls[id].value = '7';
   });
   // document.querySelectorAll('.rate-input') → []
-  const oldQSA = document.querySelectorAll;
   document.querySelectorAll = sel => {
     if (sel === '.rate-input') return [];
     if (sel === '.set-tab') return [setEls.__tab_basic, setEls.__tab_stats, setEls.__tab_backup, setEls.__tab_security];
-    if (sel === '.set-pane') return [setEls.__pane_basic, setEls.__pane_stats, setEls.__pane_backup, setEls.__pane_security];
-    return oldQSA(sel);
+    if (sel === '.settings-section') return [setEls.__sec_basic, setEls.__sec_stats, setEls.__sec_backup, setEls.__sec_security];
+    return savedQSA ? savedQSA(sel) : [];
   };
   ['__tab_basic','__tab_stats','__tab_backup','__tab_security'].forEach((k, i) => {
     setEls[k] = makeEl(k);
     setEls[k].dataset = { tab: ['basic','stats','backup','security'][i] };
   });
-  ['__pane_basic','__pane_stats','__pane_backup','__pane_security'].forEach((k, i) => {
+  ['__sec_basic','__sec_stats','__sec_backup','__sec_security'].forEach((k, i) => {
     setEls[k] = makeEl(k);
-    setEls[k].dataset = { tab: ['basic','stats','backup','security'][i] };
-    setEls[k].style.display = i === 0 ? '' : 'none';
+    setEls[k].dataset = { section: ['basic','stats','backup','security'][i] };
   });
   document.getElementById = id => setEls[id] || elements[id] || (elements[id] = makeEl(id));
   const savedGet = globalThis.localStorage.getItem, savedSet = globalThis.localStorage.setItem;
@@ -1246,13 +1246,13 @@ assert(xlsxClicked, 'Excel：锚点 click 被触发');
   try {
     EcoCal.openSettings();
     // Tab 切换：点击「备份」Tab → basic 隐藏、backup 显示
-    const basicPane = setEls.__pane_basic, backupPane = setEls.__pane_backup, secPane = setEls.__pane_security;
+    const basicSec = setEls.__sec_basic, backupSec = setEls.__sec_backup, secSec = setEls.__sec_security;
     const basicTab = setEls.__tab_basic, backupTab = setEls.__tab_backup;
     backupTab.onclick();
-    assert(basicPane.style.display === 'none' && backupPane.style.display === '', '设置页：点击「备份」Tab → 显示备份 pane、隐藏基础 pane');
+    assert(basicSec.classList.contains('hidden') && !backupSec.classList.contains('hidden'), '设置页：点击「备份」Tab → 显示备份分区、隐藏汇率与行情分区');
     assert(backupTab.classList.contains('on'), '设置页：点击后 Tab 高亮切换');
     basicTab.onclick();
-    assert(basicPane.style.display === '' && backupPane.style.display === 'none', '设置页：切回「基础」Tab 正常');
+    assert(!basicSec.classList.contains('hidden') && backupSec.classList.contains('hidden'), '设置页：切回「汇率与行情」Tab 正常');
     // 备份提醒开关：勾选 → 写入 settings 并保存
     const remEnabled = setEls['rem-enabled'];
     remEnabled.checked = true;
@@ -1277,7 +1277,7 @@ assert(xlsxClicked, 'Excel：锚点 click 被触发');
     document.getElementById = savedGEB;
     globalThis.$id = savedModal;
     globalThis.confirmAction = savedConfirm;
-    document.querySelectorAll = oldQSA;
+    document.querySelectorAll = savedQSA;
     globalThis.localStorage.getItem = savedGet;
     globalThis.localStorage.setItem = savedSet;
     EcoCal.state = JSON.parse(savedState);

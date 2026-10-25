@@ -17,7 +17,7 @@ const STORAGE_KEY = 'ecocal.data.v1';
  * - 主版本：重大架构/功能（v3 多文件、v4 股票交易与行情、v6 交易记录全模式）
  * - 次版本：功能增强（v5 监察表模式与优化、v6.1 统计功能、v6.2 统计页重设计、v6.4 云备份）
  * - 补丁：缺陷修复 */
-const APP_VERSION = '6.4.2';
+const APP_VERSION = '6.4.3';
 
 const CURRENCIES = {
   CNY: { symbol: '¥',  name: '人民币' },
@@ -2239,7 +2239,9 @@ function settingsHTML(settings) {
       '<button type="button" class="set-tab" data-tab="backup">备份</button>' +
       '<button type="button" class="set-tab" data-tab="security">安全</button>' +
     '</div>' +
-    '<div class="set-pane" data-tab="basic">' +
+    '<div class="settings-sections">' +
+    '<section class="settings-section" data-section="basic">' +
+      '<h4 class="settings-sec-title">汇率与行情</h4>' +
       '<div class="settings-tip">汇率用于把各币种资产换算为<b>基准币种</b>做总价值统计。可点击下方按钮<b>联网获取最新汇率</b>（免费公开接口，仅供统计参考，不做行情依据）；也可手动维护。未设置汇率的币种会<b>不计入总额统计</b>，并在界面标注提醒。</div>' +
       '<div class="field" style="margin-bottom:10px"><label>基准（统计）币种</label>' +
       '<select id="s-base">' + Object.keys(CURRENCIES).map(c =>
@@ -2263,8 +2265,9 @@ function settingsHTML(settings) {
         '</div>' +
         '<div class="hint" style="margin-top:8px">行情来自腾讯公开免费接口，仅供记录与计算参考；接口不可用时用卡片上的「✎ 现价 / ✎ 市值」手动录入。</div>' +
       '</div>' +
-    '</div>' +
-    '<div class="set-pane" data-tab="stats" style="display:none">' +
+    '</section>' +
+    '<section class="settings-section" data-section="stats">' +
+      '<h4 class="settings-sec-title">统计</h4>' +
       '<div class="field" style="margin-bottom:10px"><label>无风险年化利率（%，夏普比率用）</label>' +
       '<input type="number" id="s-rf" min="0" step="0.1" value="' + esc(settings.riskFreeRate != null ? settings.riskFreeRate : 2) + '">' +
       '<div class="hint">一般参考国债收益率取 1%–3%。</div></div>' +
@@ -2274,8 +2277,9 @@ function settingsHTML(settings) {
       '<div class="field" style="margin-bottom:4px"><label>单一标的上限阈值（%）</label>' +
       '<input type="number" id="s-cap" min="0" max="100" step="1" value="' + esc(settings.singleAssetCap != null ? settings.singleAssetCap : 20) + '">' +
       '<div class="hint">集中度统计中，单一标的占比超过该比例时高亮提示。</div></div>' +
-    '</div>' +
-    '<div class="set-pane" data-tab="backup" style="display:none">' +
+    '</section>' +
+    '<section class="settings-section" data-section="backup">' +
+      '<h4 class="settings-sec-title">备份</h4>' +
       '<div class="field" style="margin-bottom:8px"><label>云备份（WebDAV，可选）</label></div>' +
       '<div class="hint" style="margin-bottom:10px">配置后可把数据<b>自动备份到 WebDAV 网盘</b>，防止清缓存/换设备丢数据。每次改动后自动上传（停止编辑 60 秒后合并同步，切后台立即同步），云端为单文件覆盖式，最多保留最近一份。</div>' +
       '<div class="field" style="margin-bottom:8px"><label>WebDAV 地址</label>' +
@@ -2342,9 +2346,11 @@ function settingsHTML(settings) {
         '<div class="hint" style="margin-bottom:10px">清空会删除全部产品、交易记录与汇率设置（可撤销：页面底部会出现「撤销」提示条）。</div>' +
         '<button type="button" id="s-clear" class="btn btn-danger btn-mini">🗑 清空全部数据</button>' +
       '</div>' +
-    '</div>' +
-    '<div class="set-pane" data-tab="security" style="display:none">' +
+    '</section>' +
+    '<section class="settings-section" data-section="security">' +
+      '<h4 class="settings-sec-title">安全</h4>' +
       securityHTML() +
+    '</section>' +
     '</div>' +
     '<div style="margin-top:16px;font-size:12px;color:var(--ink-3)">EcoCal v' + APP_VERSION + ' · 数据默认仅保存在本机浏览器（localStorage）；可在「备份」页配置自动备份到 WebDAV 网盘或 Gitee 仓库（推荐 Gitee：国内直连、网页无门槛）。</div>';
 }
@@ -2590,15 +2596,20 @@ function openSettings() {
     };
   }
 
-  /* ---- 设置页 Tab 切换：仅切换可见性（隐藏面板仍在 DOM 中，保存时照常读取） ---- */
+  /* ---- 设置页 Tab 切换：仅切换可见性（隐藏面板仍在 DOM 中，保存时照常读取全部面板） ---- */
   const setTabs = document.querySelectorAll('.set-tab');
   setTabs.forEach(tab => {
     tab.onclick = () => {
       const target = tab.dataset.tab;
       setTabs.forEach(t => { t.classList.toggle('on', t === tab); });
-      document.querySelectorAll('.set-pane').forEach(p => { p.style.display = p.dataset.tab === target ? '' : 'none'; });
+      document.querySelectorAll('.settings-section').forEach(p => {
+        p.classList.toggle('hidden', p.dataset.section !== target);
+      });
     };
   });
+  // 首次打开默认停留在「汇率与行情」：应用初始可见性（其余分区隐藏）
+  const defaultTab = Array.from(setTabs).find(t => t.classList.contains('on')) || setTabs[0];
+  if (defaultTab) defaultTab.onclick();
 
   modalOnOk = () => {
     const base = $id('s-base').value;
@@ -3776,10 +3787,11 @@ function pinUnlock() {
   const ov = $id('pin-lock'); if (ov) ov.classList.add('hidden');
 }
 
-/** 设置「安全」段（PIN 锁）——插入「数据管理」段之前 */
+/** 设置「安全」板块（PIN 锁）——渲染进设置面板的「安全」分区（始终可见） */
 function securityHTML() {
-  const on = pinEnabled();
-  return '<div style="margin-top:24px;padding-top:14px;border-top:1px solid var(--line)">' +
+  let on = false;
+  try { on = pinEnabled(); } catch (e) { /* localStorage 异常时按未启用处理 */ }
+  return '<div class="security-box">' +
     '<div class="field" style="margin-bottom:8px"><label>安全（启动 PIN 锁）</label></div>' +
     (on
       ? '<label style="font-size:12px;color:var(--ink-2);display:inline-flex;gap:6px;align-items:center">' +
@@ -3793,6 +3805,9 @@ function securityHTML() {
       '<div class="field"><label>重置口令（忘记 PIN 时用于解除锁定，请记牢）</label>' +
       '<input id="s-pin-reset" type="text" autocomplete="off" placeholder="如 my-reset-word"></div>' +
       '<div class="hint">PIN 只保存在本机浏览器；不会进入备份文件 / 导出内容。忘记 PIN 时在启动遮罩点「忘记 PIN」输入重置口令即可解锁。</div>' +
+    '</div>' +
+    '<div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)" class="security-note">' +
+      '<div class="hint">💡 <b>开启 PIN 后</b>：每次启动页面、以及从后台切回前台时，都需要输入 PIN 才能查看数据。请在「保存设置」前填写 PIN 与重置口令；忘记 PIN 时可用重置口令在遮罩上解锁。</div>' +
     '</div>' +
   '</div>';
 }
