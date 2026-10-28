@@ -17,7 +17,7 @@ const STORAGE_KEY = 'ecocal.data.v1';
  * - 主版本：重大架构/功能（v3 多文件、v4 股票交易与行情、v6 交易记录全模式）
  * - 次版本：功能增强（v5 监察表模式与优化、v6.1 统计功能、v6.2 统计页重设计、v6.4 云备份）
  * - 补丁：缺陷修复 */
-const APP_VERSION = '6.4.3';
+const APP_VERSION = '6.4.4';
 
 const CURRENCIES = {
   CNY: { symbol: '¥',  name: '人民币' },
@@ -1787,7 +1787,8 @@ function tradeFormHTML(asset, type, trade) {
     : '成交单价（' + esc(asset.currency) + '）';
   // 默认录入方式：股票 → 份数×单价；外币 → 兑换（人民币 × 外币）；其他 → 总金额
   const defMode = trade ? (trade.mode || (isFx ? 'exchange' : 'qty')) : (isStock ? 'qty' : (isFx ? 'exchange' : 'amount'));
-  const pos = Calc.tradePosition(asset, state.trades, null);
+  // 当前持仓市值（优先用现价/汇率，行情缺失时回退最近成交价）——供卖出「全部卖出」一键填入
+  const pos = Calc.tradePosition(asset, state.trades, asset.lastPrice != null ? Number(asset.lastPrice) : null);
 
   const modeSwitch = '<div class="field full"><label>录入方式</label>' +
     '<div style="display:flex;gap:10px;flex-wrap:wrap">' +
@@ -1803,7 +1804,13 @@ function tradeFormHTML(asset, type, trade) {
 
   const amountField = '<div class="field" id="t-amount-row" style="display:' + (defMode === 'amount' ? '' : 'none') + '">' +
     '<label>' + (isFx ? '人民币金额' : '总金额（' + esc(asset.currency) + '）') + ' *</label>' +
-    '<input id="t-amount" type="number" min="0" step="0.01" placeholder="如 10000" value="' + esc(t.quantity != null && t.quantity !== '' ? round2(Number(t.quantity) * Number(t.price || 1)) : '') + '">' +
+    '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
+    '<input id="t-amount" type="number" min="0" step="0.01" placeholder="如 10000" value="' + esc(t.quantity != null && t.quantity !== '' ? round2(Number(t.quantity) * Number(t.price || 1)) : '') + '" style="flex:1;min-width:160px">' +
+    (!isBuy
+      ? '<button type="button" id="t-fill-sell" class="btn btn-mini ghost" title="按当前市值填入全部持仓金额"' +
+        ' data-value="' + (pos.qty > 0 ? roundQty(pos.qty * (asset.lastPrice != null && Number(asset.lastPrice) > 0 ? Number(asset.lastPrice) : 1)) : '') + '">全部卖出 ▸ ' + (pos.qty > 0 ? fmtMoney(roundQty(pos.qty * (asset.lastPrice != null && Number(asset.lastPrice) > 0 ? Number(asset.lastPrice) : 1)), asset.currency) : '--') + '</button>'
+      : '') +
+    '</div>' +
     '<div class="hint">填写这次交易的总投入/总回收金额，' + (isFx ? '外币数量' : '份额') + '自动按「当前单位价值」折算；当前无单位价值时整笔金额按 1 份记录（金额即单价）。</div></div>';
 
   // 单价行：仅「份数 × 单价」模式需要；总金额 / 兑换模式隐藏，不要求填写单价
@@ -1846,6 +1853,8 @@ function openTradeForm(assetId, type, tradeId) {
   const trade = tradeId ? state.trades.find(x => x.id === tradeId) : null;
   const fxName = asset.foreignCurrency || '外币';
   const title = trade ? '编辑交易 · ' + asset.name : (type === 'buy' ? '买入 · ' : '卖出 · ') + asset.name;
+  // 当前持仓（带现价）：卖出一键填入「全部卖出」按钮需要同一份持仓数据
+  const pos = Calc.tradePosition(asset, state.trades, asset.lastPrice != null ? Number(asset.lastPrice) : null);
   openModal(title, tradeFormHTML(asset, trade ? trade.type : type, trade),
     () => submitTrade(assetId, tradeId, trade ? trade.type : type));
 
@@ -1870,6 +1879,25 @@ function openTradeForm(assetId, type, tradeId) {
     // 打开表单时立即按默认录入方式同步一次：
     // 修复首次进入总金额模式时仍显示「份数 / 单价」输入行的问题
     applyMode();
+  }
+  // 总金额模式卖出：「全部卖出」一键填入当前持仓市值（仅在有市值时可用）
+  const fillSell = document.getElementById('t-fill-sell');
+  if (fillSell) {
+    fillSell.onclick = () => {
+      const v = fillSell.getAttribute('data-value');
+      if (v === '' || !(Number(v) > 0)) { alert('当前无可用的持仓市值，无法一键填入。请先在卡片上更新现价 / 市值。'); return; }
+      const amountInput = $id('t-amount');
+      const unitPrice = asset.lastPrice != null && Number(asset.lastPrice) > 0 ? Number(asset.lastPrice) : null;
+      // 填「当前持仓总金额」；若有单位价值，同时按「金额 ÷ 单位价值」折算全部份额填入份数（qty 模式可直用）
+      amountInput.value = v;
+      if (unitPrice) {
+        const qtyRow = document.getElementById('t-qty-row');
+        if (qtyRow && qtyRow.style.display !== 'none') {
+          const qtyInput = $id('t-qty');
+          if (qtyInput) qtyInput.value = String(pos.qty);
+        }
+      }
+    };
   }
   // 兑换模式：实时显示折算汇率（人民币 ÷ 外币）
   if (exchangeRadio && document.getElementById('t-cny')) {
@@ -1941,7 +1969,10 @@ function submitTrade(assetId, tradeId, type) {
   }
   const note = $id('t-note').value.trim();
   qty = roundQty(qty);
-  price = roundPrice(price);
+  // 单价只做浮点误差修整、不取整：总金额/兑换模式的单价是按「金额 ÷ 数量」派生的，
+  // 若被 roundPrice 舍成 4 位小数（如 1.000871 → 1.0009），会把误差放大进卖出金额，
+  // 导致已实现盈亏被四舍五入（10008.71 的盈利显示成 9 元）。用户手填的单价同理原样保存。
+  price = roundPriceSoft(price);
   if (type === 'sell') {
     // 卖出校验：排除待编辑交易本身后计算当前持仓
     const others = tradeId ? state.trades.filter(x => x.id !== tradeId) : state.trades;

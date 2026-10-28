@@ -32,7 +32,9 @@ function makeEl(id) {
       contains(c) { return this._s.has(c); },
     },
     appendChild() {}, remove() {}, click() {}, addEventListener() {},
-    setAttribute() {}, querySelectorAll() { return []; },
+    setAttribute(k, v) { this._attrs = this._attrs || {}; this._attrs[k] = String(v); },
+    getAttribute(k) { return this._attrs ? (this._attrs[k] !== undefined ? this._attrs[k] : null) : null; },
+    _attrs: {}, querySelectorAll() { return []; },
     select() {},
   };
 }
@@ -340,7 +342,134 @@ priceHtml = elements['modal-body'].innerHTML || '';
 assert(priceHtml.includes('id="p-value"') && priceHtml.includes('当前持仓总金额'), '非股票市值弹窗：填当前持仓总金额');
 assert(!priceHtml.includes('id="p-price"'), '非股票不出现单价输入');
 
+// 4.10b-1 卖出盈利不四舍五入成整元（10000 元买入 → 市值调到 10008.71 → 卖出后盈利应 8.71 而非 9 元）：
+// 复现用户真实路径：总金额买入 10000 元（单价 1）→ 手动把市值调到 10008.71（lastPrice=1.000871 原样）
+// → 卖出填总金额 10008.71、不填单价 → 按当前单位价值折算份额 → 派生单价 1.000871 不得被舍成 1.0009
+EcoCal.state.assets = [
+  { id: 'rr1', name: '回归基金', category: 'fund', subCategory: '混合型', currency: 'CNY',
+    principal: 0, quantity: null, startDate: null, note: '', lastPrice: 1 },
+];
+EcoCal.state.trades = [];
+setTmode(false); // 总金额模式
+EcoCal.openTradeForm('rr1', 'buy', null);
+touch('t-amount').value = '10000';
+touch('t-price').value = '1';    // 买入单价 1 元
+touch('t-date').value = '2026-04-01';
+EcoCal.submitTrade('rr1', null, 'buy');
+assert(EcoCal.state.trades.length === 1, '回归：总金额买入生成一笔交易');
+assert(approx(EcoCal.state.trades[0].quantity, 10000) && approx(EcoCal.state.trades[0].price, 1), '回归：买入份额 10000、单价 1');
+// 手动把市值调到 10008.71（折算 lastPrice = 10008.71/10000 = 1.000871 原样）
+const rr1 = EcoCal.state.assets[0];
+EcoCal.manualPriceline(rr1);
+elements['p-value'] = { value: '10008.71' };
+elements['modal-ok'].onclick();
+assert(approx(rr1.lastPrice, 1.000871), '回归：市值调为 10008.71 后单位价值 1.000871 原样保存');
+EcoCal.openTradeForm('rr1', 'sell', null);
+touch('t-amount').value = '10008.71';
+touch('t-price').value = '';     // 卖出不填单价：按当前单位价值 1.000871 折算份额
+touch('t-date').value = '2026-04-10';
+EcoCal.submitTrade('rr1', null, 'sell');
+assert(EcoCal.state.trades.length === 2, '回归：卖出交易已生成');
+assert(approx(EcoCal.state.trades[1].price, 1.000871) && approx(EcoCal.state.trades[1].quantity, 10000), '回归：卖出派生单价 1.000871 原样、份额 10000');
+let regPos = Calc.tradePosition(rr1, EcoCal.state.trades, rr1.lastPrice);
+assert(regPos.qty === 0 && approx(regPos.realized, 8.71), '回归：卖出盈利 = 10008.71 − 10000 = 8.71（显示应为 8.71 而非 9 元）');
+assert(approx(regPos.totalProfit, 8.71), '回归：清仓后总盈亏 = 已实现 8.71');
+EcoCal.state.trades = [];
+setTmode(true); // 兑换模式
+// 兑换模式派生汇率同样不得被舍成 4 位小数（20000 元 ÷ 4000 USD = 5 精确；卖出 10008.71 ÷ 2000 = 5.004355 必须原样）
+EcoCal.state.assets = [
+  { id: 'rr2', name: '回归美元', category: 'fx', subCategory: '现汇', currency: 'CNY',
+    foreignCurrency: 'USD', principal: 0, quantity: null, startDate: null, note: '', lastPrice: null },
+];
+EcoCal.openTradeForm('rr2', 'buy', null);
+touch('t-cny').value = '20000';
+touch('t-fxqty').value = '4000';
+touch('t-date').value = '2026-04-01';
+EcoCal.submitTrade('rr2', null, 'buy');
+assert(approx(EcoCal.state.trades[0].price, 5), '兑换回归：买入汇率 20000/4000 = 5');
+EcoCal.openTradeForm('rr2', 'sell', null);
+touch('t-cny').value = '10008.71';
+touch('t-fxqty').value = '2000';
+touch('t-date').value = '2026-04-10';
+EcoCal.submitTrade('rr2', null, 'sell');
+assert(approx(EcoCal.state.trades[1].price, 10008.71 / 2000), '兑换回归：卖出汇率 10008.71/2000 = 5.004355 原样保存（不得舍成 5.0044）');
+regPos = Calc.tradePosition(EcoCal.state.assets[0], EcoCal.state.trades, null);
+assert(approx(regPos.qty, 2000) && approx(regPos.realized, 8.71), '兑换回归：卖出盈利 10008.71 − 2000×5 = 8.71 元');
+EcoCal.state.trades = [];
+setTmode(false); // 恢复：总金额
+// qty 模式：手填 6 位小数单价原样保存（不得被 roundPrice 舍成 4 位）
+EcoCal.state.assets = [
+  { id: 'rr3', name: '回归股票', category: 'stock', subCategory: 'A股', currency: 'CNY',
+    principal: 0, quantity: null, startDate: null, note: '', lastPrice: null },
+];
+EcoCal.openTradeForm('rr3', 'buy', null);
+touch('t-qty').value = '100';
+touch('t-price').value = '1.000871';
+touch('t-date').value = '2026-04-01';
+EcoCal.submitTrade('rr3', null, 'buy');
+assert(approx(EcoCal.state.trades[0].price, 1.000871), 'qty 模式：手填 6 位小数单价 1.000871 原样保存');
+
+// 4.10b-2 卖出「全部卖出」一键填入当前持仓市值（总金额模式快捷按钮）
+// 基金：买入 10000 元（份额 10000）→ 市值调到 10008.71 → 卖出表单出现「全部卖出」按钮，
+// data-value = 当前持仓市值 10008.71，点击自动填入总金额 → 提交卖出后盈利 8.71
+EcoCal.state.assets = [
+  { id: 'fs1', name: '一键基金', category: 'fund', subCategory: '混合型', currency: 'CNY',
+    principal: 0, quantity: null, startDate: null, note: '', lastPrice: 1 },
+];
+EcoCal.state.trades = [];
+EcoCal.openTradeForm('fs1', 'buy', null);
+touch('t-amount').value = '10000';
+touch('t-price').value = '1';
+touch('t-date').value = '2026-05-01';
+EcoCal.submitTrade('fs1', null, 'buy');
+EcoCal.manualPriceline(EcoCal.state.assets[0]);
+elements['p-value'] = { value: '10008.71' };
+elements['modal-ok'].onclick();
+assert(approx(EcoCal.state.assets[0].lastPrice, 1.000871), '一键卖出：市值调为 10008.71 后单位价值 1.000871');
+EcoCal.openTradeForm('fs1', 'sell', null);
+let fsHtml = elements['modal-body'].innerHTML || '';
+assert(fsHtml.includes('id="t-fill-sell"'), '一键卖出：卖出表单渲染「全部卖出」按钮');
+const fillValue = parseFloat((fsHtml.match(/data-value="([\d.]+)"/) || [])[1] || '0');
+assert(approx(fillValue, 10008.71), '一键卖出：按钮 data-value = 当前持仓市值 10008.71');
+assert(fsHtml.includes('全部卖出 ▸ ¥10,008.71'), '一键卖出：按钮文案显示市值 ¥10,008.71');
+// 点击按钮：模拟真实按钮上的 data-value（桩属性与按钮 HTML 一致）
+elements['t-fill-sell'].setAttribute('data-value', '10008.71');
+elements['t-fill-sell'].onclick();
+assert(elements['t-amount'].value === '10008.71', '一键卖出：点击后总金额自动填入 10008.71');
+touch('t-price').value = '';  // 卖出不填单价：按当前单位价值折算（清掉买入表单残留的桩值）
+touch('t-date').value = '2026-05-10';
+EcoCal.submitTrade('fs1', null, 'sell');
+let fsPos = Calc.tradePosition(EcoCal.state.assets[0], EcoCal.state.trades, EcoCal.state.assets[0].lastPrice);
+assert(fsPos.qty === 0 && approx(fsPos.realized, 8.71), '一键卖出：全仓卖出（总金额 10008.71）后盈利 = 8.71');
+// 买入表单：不出现「全部卖出」按钮
+EcoCal.openTradeForm('fs1', 'buy', null);
+assert(!(elements['modal-body'].innerHTML || '').includes('t-fill-sell'), '一键卖出：买入表单不出现「全部卖出」按钮');
+// 无持仓资产：按钮显示「--」、data-value 为空，点击被拦截并提示
+EcoCal.state.assets = [
+  { id: 'fs2', name: '空仓基金', category: 'fund', subCategory: '混合型', currency: 'CNY',
+    principal: 0, quantity: null, startDate: null, note: '', lastPrice: 1.5 },
+];
+EcoCal.state.trades = [];
+EcoCal.openTradeForm('fs2', 'sell', null);
+fsHtml = elements['modal-body'].innerHTML || '';
+assert(fsHtml.includes('全部卖出 ▸ --') && fsHtml.includes('data-value=""'), '一键卖出：无持仓时按钮显示 -- 且 data-value 为空');
+let fsAlert = null;
+const fsAlertOrig = globalThis.alert;
+globalThis.alert = (m) => { fsAlert = m; };
+elements['t-fill-sell'].setAttribute('data-value', '');
+elements['t-fill-sell'].onclick();
+globalThis.alert = fsAlertOrig;
+assert(!!fsAlert && fsAlert.includes('无法一键填入'), '一键卖出：data-value 为空时点击被拦截并提示');
+
 // 4.10b 手动录价不四舍五入：录多少存多少（roundPriceSoft，修复「更新市值自动四舍五入」）
+EcoCal.state.assets = [
+  { id: 'mps', name: '股票', category: 'stock', subCategory: 'A股', currency: 'CNY', principal: 0, quantity: null, startDate: null, note: '', lastPrice: null },
+  { id: 'mpf', name: '基金', category: 'fund', subCategory: '混合型', currency: 'CNY', principal: 0, quantity: null, startDate: null, note: '', lastPrice: null },
+];
+EcoCal.state.trades = [
+  { id: 'mt1', assetId: 'mps', type: 'buy', date: '2026-01-01', quantity: 100, price: 10, fee: 0, note: '' },
+  { id: 'mt2', assetId: 'mpf', type: 'buy', date: '2026-01-01', quantity: 1000, price: 1, fee: 0, note: '' },
+];
 const stockA = EcoCal.state.assets[0];           // mps 股票，持仓 100 股
 EcoCal.manualPriceline(stockA);
 elements['p-price'] = { value: '7.25255' };      // 5 位小数股价（仅在提交回调中被读取，桩需先存在）
@@ -1162,6 +1291,9 @@ assert(xlsxClicked, 'Excel：锚点 click 被触发');
     // 11.5 两天不同 → 每天最多提醒一次（localStorage 标记）
     const savedLSGet = globalThis.localStorage.getItem, savedLSSet = globalThis.localStorage.setItem;
     const savedToday = EcoCal.todayStr;
+    // 注意：initBackupReminders 内部用的是模块作用域的 todayStr()（真实日期），
+    // 与 EcoCal.todayStr 导出属性是不同引用 —— 标记键必须以真实日期计算，否则跨天即失效。
+    const realTodayKey = 'ecocal.backup-reminder.' + EcoCal.todayStr();
     const lsKeys = {};
     globalThis.localStorage.getItem = k => (k in lsKeys ? lsKeys[k] : null);
     globalThis.localStorage.setItem = (k, v) => { lsKeys[k] = v; };
@@ -1175,7 +1307,7 @@ assert(xlsxClicked, 'Excel：锚点 click 被触发');
       elements['confirm-ok'].onclick = null;
       EcoCal.initBackupReminders();
       assert(elements['confirm-ok'].onclick !== null, '提醒：首次本地检查触发提醒弹窗（confirm-ok 已挂回调）');
-      assert(lsKeys['ecocal.backup-reminder.2026-10-25'] === '1', '提醒：已写当天标记，避免重复弹窗');
+      assert(lsKeys[realTodayKey] === '1', '提醒：已写当天标记，避免重复弹窗');
       const okText = elements['confirm-ok'].textContent;
       assert(okText === '去备份', '提醒：确认按钮文案为「去备份」（实际 ' + okText + '）');
       // 同一天再次检查：先还原回调，标记存在 → 不重复弹窗
