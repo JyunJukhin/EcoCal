@@ -75,6 +75,18 @@
           <button type="button" data-mode="profit">累计收益</button>
           <button type="button" data-mode="rate">收益率</button>
           <button type="button" data-mode="dd">回撤</button>
+          <span class="trend-range-wrap">
+            <label for="trend-range">区间</label>
+            <select id="trend-range" class="trend-range">
+              <option value="all">全部</option>
+              <option value="1m">近 1 月</option>
+              <option value="3m">近 3 月</option>
+              <option value="6m">近 6 月</option>
+              <option value="1y">近 1 年</option>
+              <option value="ytd">年初至今</option>
+              <option value="custom">自定义…</option>
+            </select>
+          </span>
         </div>
         <div class="chart-box" id="trend-chart"></div>
         <div class="trend-stats" id="trend-stats"></div>

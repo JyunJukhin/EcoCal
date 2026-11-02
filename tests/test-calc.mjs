@@ -1416,6 +1416,20 @@ assert(xlsxClicked, 'Excel：锚点 click 被触发');
   }
 }
 
+/* ---- 4.10d 走势图区间选择 ---- */
+{
+  // TREND_RANGES 常量与趋势区间截断函数
+  assert(typeof EcoCal.TREND_RANGES === 'object' && !Array.isArray(EcoCal.TREND_RANGES), 'TREND_RANGES 是对象（区间配置）');
+  const cutAll = EcoCal.trendRangeCutoff('all', '2026-06-15');
+  assert(cutAll === null, '区间「全部」→ cutoff null（不过滤）');
+  const cutYtd = EcoCal.trendRangeCutoff('ytd', '2026-06-15');
+  assert(cutYtd === '2026-01-01', '区间「年初至今」→ 2026-01-01');
+  const cut1m = EcoCal.trendRangeCutoff('1m', '2026-06-15');
+  assert(cut1m === '2026-05-16', '区间「近1月」→ 30 天前');
+  const cut3m = EcoCal.trendRangeCutoff('3m', '2026-06-15');
+  assert(cut3m === '2026-03-17', '区间「近3月」→ 90 天前');
+}
+
 /* ---- 汇总结果 ---- */
 console.log('\n结果：' + pass + ' 通过，' + fail + ' 失败');
 if (fail > 0) process.exit(1);

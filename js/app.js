@@ -17,7 +17,7 @@ const STORAGE_KEY = 'ecocal.data.v1';
  * - 主版本：重大架构/功能（v3 多文件、v4 股票交易与行情、v6 交易记录全模式）
  * - 次版本：功能增强（v5 监察表模式与优化、v6.1 统计功能、v6.2 统计页重设计、v6.4 云备份）
  * - 补丁：缺陷修复 */
-const APP_VERSION = '6.4.4';
+const APP_VERSION = '6.4.5';
 
 const CURRENCIES = {
   CNY: { symbol: '¥',  name: '人民币' },
@@ -1044,6 +1044,8 @@ let expanded = new Set();      // 展开卡片集合
 // 筛选条件：category/currency（下拉）；risk/fxFlag/assetId 为旧版图表筛选遗留字段（恒为 null，保留兼容）
 let filters = { category: 'all', currency: 'all', risk: null, fxFlag: null, assetId: null, sort: 'valueDesc' };
 let trendMode = 'dual';        // 组合走势模式：dual / profit / rate / dd
+let trendRange = 'all';        // 走势区间：all / 1m / 3m / 6m / 1y / ytd / custom
+let trendCustom = null;        // 自定义区间 { start, end }（trendRange === 'custom' 时生效）
 let activeTab = 'assets';      // 主界面分页：assets（产品）/ stats（统计）
 
 /* ---- 主界面分页切换：产品 / 统计 ---- */
@@ -1245,10 +1247,37 @@ const TREND_MODES = {
   dd:     { label: '回撤',          desc: '距历史峰值的回撤（%）' },
 };
 
+// 走势图区间（v6.5）：all=全部 / 1m / 3m / 6m / 1y / ytd=年初至今；自定义区间由 ce 面板传入
+const TREND_RANGES = {
+  all: { label: '全部' },
+  '1m': { label: '近 1 月', days: 30 },
+  '3m': { label: '近 3 月', days: 90 },
+  '6m': { label: '近 6 月', days: 182 },
+  '1y': { label: '近 1 年', days: 365 },
+  ytd: { label: '年初至今' },
+};
+/** 计算区间起点的截止日期：today 往前推 days 天；ytd 取当年 1 月 1 日；all 无截止 */
+function trendRangeCutoff(range, today) {
+  const t = today || todayStr();
+  if (range === 'all' || !range) return null;
+  if (range === 'ytd') return String(Number(t.slice(0, 4))) + '-01-01';
+  const days = TREND_RANGES[range] && TREND_RANGES[range].days;
+  if (!days) return null;
+  const d = new Date(t + 'T00:00:00');
+  d.setDate(d.getDate() - days);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
 function renderTrendChart() {
   const s = Calc.summary(state.assets, state.valuations, state.settings, state.trades);
   const base = state.settings.baseCurrency;
-  const pts = Calc.portfolioTrend(state.assets, state.trades, state.settings);
+  const ptsAll = Calc.portfolioTrend(state.assets, state.trades, state.settings);
+
+  // 区间截取：保留 cutoff 当日及之后的点；自定义区间用 trendCustom {start,end}
+  let cutoff = null;
+  if (trendRange === 'custom' && trendCustom && trendCustom.start) cutoff = trendCustom.start;
+  else cutoff = trendRangeCutoff(trendRange, todayStr());
+  const pts = cutoff ? ptsAll.filter(p => p.date >= cutoff) : ptsAll.slice();
 
   // 按模式生成系列
   // 注意：portfolioTrend 的 net = Σ卖出 − Σ买入，即「负的累计净投入」；
@@ -1273,6 +1302,18 @@ function renderTrendChart() {
   }
   $id('trend-chart').innerHTML = Charts.trendSeries(series, opts);
 
+  // 区间选择器（重新渲染时保持当前选择；切换只重画不改模式）
+  const rangeSel = $id('trend-range');
+  if (rangeSel) {
+    rangeSel.value = trendRange;
+    rangeSel.onchange = () => {
+      trendRange = rangeSel.value;
+      // 自定义区间：弹出起止日期选择
+      if (trendRange === 'custom') { openCustomRange(); return; }
+      renderTrendChart();
+    };
+  }
+
   // 指标条：收益/年化/回撤/波动/夏普（一般投资产品常见统计）
   const pm = Calc.portfolioMetrics(pts, state.settings);
   const xirrValue = Calc.xirr(state.assets, state.trades, state.settings);
@@ -1292,11 +1333,34 @@ function renderTrendChart() {
 
   // 描述与模式按钮联动
   const desc = $id('trend-desc');
-  if (desc && TREND_MODES[trendMode]) desc.textContent = TREND_MODES[trendMode].desc + '（点击上方模式切换）';
+  const rangeTxt = trendRange === 'all' ? '全部时段' : (TREND_RANGES[trendRange] ? TREND_RANGES[trendRange].label : '自定义');
+  if (desc && TREND_MODES[trendMode]) desc.textContent = TREND_MODES[trendMode].desc + '（区间：' + rangeTxt + '）';
   document.querySelectorAll('#trend-modes button').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.mode === trendMode);
     btn.onclick = () => setTrendMode(btn.dataset.mode);
   });
+}
+
+/** 自定义区间弹窗：起止日期（可选起始，缺省取最早交易日；可选结束，缺省今天） */
+function openCustomRange() {
+  const dates = (state.trades || []).map(t => t.date).sort();
+  const earliest = dates.length ? dates[0] : todayStr();
+  const curStart = trendCustom && trendCustom.start ? trendCustom.start : earliest;
+  const curEnd = trendCustom && trendCustom.end ? trendCustom.end : todayStr();
+  const body = '<div class="field"><label>起始日期</label>' +
+    '<input type="date" id="cr-start" value="' + esc(curStart) + '" max="' + esc(todayStr()) + '"></div>' +
+    '<div class="field"><label>结束日期</label>' +
+    '<input type="date" id="cr-end" value="' + esc(curEnd) + '" min="' + esc(curStart) + '" max="' + esc(todayStr()) + '"></div>' +
+    '<div class="hint">走势图将显示该时间段内的组合市值 / 收益变化；统计页「回顾」也支持自定义区间。</div>';
+  openModal('走势区间 · 自定义', body, null, null);
+  $id('modal-ok').textContent = '应用区间';
+  $id('modal-ok').onclick = () => {
+    const s = $id('cr-start').value, e = $id('cr-end').value;
+    if (!s || !e || s > e) { alert('请选择有效的起止日期。'); return; }
+    trendCustom = { start: s, end: e };
+    renderTrendChart();
+    closeModal();
+  };
 }
 
 function setTrendMode(mode) {
@@ -4207,6 +4271,8 @@ window.__EcoCal = {
   submitTrade, submitAsset,
   renderAll, renderList,
   switchTab, setTrendMode,
+  // 走势区间（供测试/调试）
+  TREND_RANGES, trendRangeCutoff, openCustomRange,
   openExportModal, openImportModal, importPayloadText, applyPayload, buildExportPayload, buildCloudPayload,
   migrateToTrades, migrateToV6, fxRateFromCache, daysAgoStr,
   normalizeSymbol, symbolToCurrency, fetchQuote, fetchKline, fetchStockInfo,
