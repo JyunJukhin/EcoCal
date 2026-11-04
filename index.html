@@ -75,6 +75,7 @@
           <button type="button" data-mode="profit">累计收益</button>
           <button type="button" data-mode="rate">收益率</button>
           <button type="button" data-mode="dd">回撤</button>
+          <button type="button" data-mode="cmp">对比基准</button>
           <span class="trend-range-wrap">
             <label for="trend-range">区间</label>
             <select id="trend-range" class="trend-range">
@@ -102,6 +103,8 @@
   <section class="tab-panel" id="panel-assets" role="tabpanel">
     <!-- 筛选栏 -->
     <section class="filter-bar">
+      <input id="filter-search" type="search" placeholder="搜索名称 / 代码 / 备注…" title="按名称、代码、备注搜索">
+      <span class="sep"></span>
       <span class="filter-label">筛选：</span>
       <select id="filter-category" title="按类别筛选"></select>
       <select id="filter-currency" title="按币种筛选"></select>

@@ -15,6 +15,52 @@
   --shadow:0 1px 2px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.06);
   --font:-apple-system,BlinkMacSystemFont,"SF Pro SC","PingFang SC","Helvetica Neue","Microsoft YaHei",sans-serif;
 }
+/* 深色模式（跟随系统或手动开启）：覆盖主题变量，其余颜色均引用变量自动适配 */
+html[data-theme="dark"]{
+  --bg:#1a1a1e;
+  --card:#232327;
+  --ink:#f2f2f7;
+  --ink-2:#a8a8b0;
+  --ink-3:#7c7c84;
+  --line:rgba(255,255,255,.10);
+  --accent:#0a84ff;
+  --accent-press:#3a9bff;
+  --red:#ff453a;     /* 涨（暗色下更亮） */
+  --green:#30d158;   /* 跌（暗色下更亮） */
+  --shadow:0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.4);
+}
+html[data-theme="dark"] body{background:var(--bg);color:var(--ink)}
+/* 暗色下把硬编码浅底色的元素统一接到变量（保持对比度） */
+html[data-theme="dark"] .topbar{background:rgba(26,26,30,.82)}
+html[data-theme="dark"] .version-tag{background:rgba(255,255,255,.08)}
+html[data-theme="dark"] .btn-ghost{background:rgba(255,255,255,.08)}
+html[data-theme="dark"] .btn-ghost:hover{background:rgba(255,255,255,.14)}
+html[data-theme="dark"] .btn-danger{background:rgba(255,69,58,.12)}
+html[data-theme="dark"] .btn-danger:hover{background:rgba(255,69,58,.2)}
+html[data-theme="dark"] .conc-card{background:rgba(255,255,255,.06)}
+html[data-theme="dark"] .detail-table th{background:rgba(255,255,255,.06)}
+html[data-theme="dark"] .detail-table tbody tr{border-bottom:1px solid rgba(255,255,255,.06)}
+html[data-theme="dark"] .detail-table tbody tr:hover{background:rgba(10,132,255,.08)}
+html[data-theme="dark"] .dist-track{background:rgba(255,255,255,.1)}
+html[data-theme="dark"] .trend-stats .ts{background:rgba(255,255,255,.06)}
+html[data-theme="dark"] .settings-select, html[data-theme="dark"] select,
+html[data-theme="dark"] .filter-bar select{background:#2c2c30;color:var(--ink)}
+html[data-theme="dark"] input,html[data-theme="dark"] textarea{background:#2c2c30;color:var(--ink);border-color:var(--line)}
+html[data-theme="dark"] .asset-expand{background:#1e1e22}
+html[data-theme="dark"] .input-mode{background:#2c2c30}
+html[data-theme="dark"] .modal-header button:hover, html[data-theme="dark"] .tag.alt, html[data-theme="dark"] .asset-actions .btn-mini.ghost{background:rgba(255,255,255,.08)}
+html[data-theme="dark"] .asset-actions .btn-mini.ghost:hover{background:rgba(255,255,255,.14)}
+html[data-theme="dark"] .settings-tip{background:rgba(255,255,255,.06);color:var(--ink-2)}
+html[data-theme="dark"] .pin-lock-box input,html[data-theme="dark"] .modal-body textarea{background:#2c2c30;color:var(--ink)}
+html[data-theme="dark"] .badge-sell.locked,html[data-theme="dark"] .badge-sell.partial{background:rgba(255,159,10,.16);color:#ffb340}
+html[data-theme="dark"] .badge-warn{background:rgba(255,159,10,.16);color:#ffb340}
+html[data-theme="dark"] .tab{color:var(--ink-2)}
+html[data-theme="dark"] .tab.active{color:var(--ink)}
+html[data-theme="dark"] .demo-banner{background:linear-gradient(90deg,#12233f,#271a3a)}
+html[data-theme="dark"] .settings-tabs .set-tab{border-color:var(--line);color:var(--ink-2)}
+html[data-theme="dark"] .settings-tabs .set-tab.on{background:var(--accent);border-color:var(--accent);color:#fff}
+/* 手动「浅色」强制覆盖：清空 html 上的 data-theme 即可回到默认浅色，此处仅作占位说明 */
+html[data-theme="light"]{}
 *{box-sizing:border-box;margin:0;padding:0}
 html{-webkit-text-size-adjust:100%}
 body{
@@ -300,6 +346,19 @@ input,select,textarea{font-family:inherit;font-size:14px;color:var(--ink)}
   padding:6px 10px;font-size:13px;outline:none;
 }
 .filter-bar select:focus{border-color:var(--accent)}
+.filter-bar input[type=search],
+.filter-bar input[type=search]#filter-search{
+  background:#f5f5f7;border:1px solid var(--line);border-radius:10px;
+  padding:6px 4px 6px 12px;font-size:13px;outline:none;
+  color:var(--ink);min-width:150px;width:190px;
+  transition:border-color .15s,width .2s ease;
+}
+.filter-bar input[type=search]#filter-search::placeholder{color:var(--ink-3)}
+.filter-bar input[type=search]#filter-search:focus{
+  border-color:var(--accent);width:230px;
+}
+.filter-bar input[type=search]#filter-search::-webkit-search-cancel-button{-webkit-appearance:none;appearance:none}
+html[data-theme="dark"] .filter-bar input[type=search]#filter-search{background:#2c2c30;color:var(--ink)}
 .filter-label{font-size:12px;color:var(--ink-3)}
 
 /* ============ 产品卡片列表 ============ */

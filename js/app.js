@@ -17,7 +17,7 @@ const STORAGE_KEY = 'ecocal.data.v1';
  * - 主版本：重大架构/功能（v3 多文件、v4 股票交易与行情、v6 交易记录全模式）
  * - 次版本：功能增强（v5 监察表模式与优化、v6.1 统计功能、v6.2 统计页重设计、v6.4 云备份）
  * - 补丁：缺陷修复 */
-const APP_VERSION = '6.4.5';
+const APP_VERSION = '6.5.0';
 
 const CURRENCIES = {
   CNY: { symbol: '¥',  name: '人民币' },
@@ -100,10 +100,13 @@ const RISK_COLORS = { R1: '#1d9e49', R2: '#34c759', R3: '#ff9f0a', R4: '#ff9500'
 /* 排序选项（筛选栏动态生成） */
 const SORT_OPTIONS = [
   ['valueDesc', '市值从高到低'],
+  ['valueAsc', '市值从低到高'],
   ['annualDesc', '年化从高到低'],
   ['annualAsc', '年化从低到高'],
   ['rateDesc', '收益率从高到低'],
   ['rateAsc', '收益率从低到高（亏损优先）'],
+  ['realizedDesc', '已实现盈亏从高到低'],
+  ['profitDesc', '总盈亏从高到低'],
   ['daysDesc', '持有天数从多到少'],
   ['name', '名称'],
 ];
@@ -244,6 +247,8 @@ const DEFAULT_SETTINGS = {
     enabled: false,       // 是否启用「未备份提醒」
     days: 7,              // 超过 N 天未成功备份时提醒（N 由用户设置）
   },
+  // 外观：auto = 跟随系统 / light = 强制浅色 / dark = 强制深色
+  themeMode: 'auto',
 };
 
 let state = { assets: [], valuations: [], trades: [], settings: Object.assign({}, DEFAULT_SETTINGS) };
@@ -380,7 +385,7 @@ const Calc = {
     const list = trades
       .filter(t => t.assetId === asset.id)
       .sort((x, y) => x.date < y.date ? -1 : x.date > y.date ? 1 : 0);
-    let qty = 0, cost = 0, realized = 0, received = 0;
+    let qty = 0, cost = 0, realized = 0, received = 0, income = 0;
     const events = [];
     list.forEach(t => {
       const q = Number(t.quantity) || 0;
@@ -396,12 +401,23 @@ const Calc = {
         realized = round2(realized + r);
         cost = round2(Math.max(0, cost - baseCost));
         qty = Math.max(0, qty - q);
-        events.push({ trade: t, qty, cost, realized: r });
+        events.push({ trade: t, qty, cost, realized: r, income: 0 });
+      } else if (t.type === 'income') {
+        // 分红 / 利息 / 场外现金流：不买不卖、不改变持仓与成本。
+        // quantity × price = 现金流金额（正数 = 收到分红/利息；负数 = 场外补充资金）。
+        // 正数现金流入计入「已实现（落袋）收益」；负数（注资）仅作现金流记录。
+        const amt = round2(q * p - fee);
+        if (q > 0) {
+          realized = round2(realized + amt);
+          received = round2(received + amt);
+        }
+        income = round2(income + amt);
+        events.push({ trade: t, qty, cost, realized: q > 0 ? amt : 0, income: amt });
       } else {
         // 买入：成本累加（含手续费）
         cost = round2(cost + q * p + fee);
         qty += q;
-        events.push({ trade: t, qty, cost, realized: 0 });
+        events.push({ trade: t, qty, cost, realized: 0, income: 0 });
       }
     });
     const avgCost = qty > 0 ? cost / qty : 0;
@@ -423,7 +439,7 @@ const Calc = {
     const firstDate = list.length ? list[0].date : asset.startDate;
     const days = Math.max(0, dayDiff(firstDate, today || todayStr()));
     return {
-      qty, cost, avgCost, realized, received, marketValue, float, totalProfit,
+      qty, cost, avgCost, realized, received, income, marketValue, float, totalProfit,
       events, days, firstDate, hasTrades: list.length > 0,
     };
   },
@@ -457,6 +473,10 @@ const Calc = {
           const p = Number(t.price) || 0;
           const fee = Number(t.fee) || 0;
           if (t.type === 'buy') { qty += q; net -= (q * p + fee); lastPrice = p; }
+          else if (t.type === 'income') {
+            // 分红/利息/场外现金流：不变持仓；收到的现金（正）为流入（净投入为负向减少）
+            net -= (q * p - fee);
+          }
           else { qty -= q; net += (q * p - fee); lastPrice = p; }
           li++;
         }
@@ -575,7 +595,7 @@ const Calc = {
         const q = Number(t.quantity) || 0;
         const p = Number(t.price) || 0;
         const fee = Number(t.fee) || 0;
-        const amount = t.type === 'buy' ? -(q * p + fee) : (q * p - fee);
+        const amount = t.type === 'buy' ? -(q * p + fee) : (t.type === 'income' ? (q * p - fee) : (q * p - fee));
         const baseAmt = Calc.toBase(amount, a.currency, settings);
         if (baseAmt != null && Math.abs(baseAmt) > 0.004) flows.push({ date: t.date, amount: round2(baseAmt) });
       });
@@ -1041,9 +1061,9 @@ const Charts = {
 
 /* ---------------- 状态 & 渲染 ---------------- */
 let expanded = new Set();      // 展开卡片集合
-// 筛选条件：category/currency（下拉）；risk/fxFlag/assetId 为旧版图表筛选遗留字段（恒为 null，保留兼容）
-let filters = { category: 'all', currency: 'all', risk: null, fxFlag: null, assetId: null, sort: 'valueDesc' };
-let trendMode = 'dual';        // 组合走势模式：dual / profit / rate / dd
+// 筛选条件：category/currency/query（下拉+搜索框）；risk/fxFlag/assetId 为旧版图表筛选遗留字段（恒为 null，保留兼容）
+let filters = { category: 'all', currency: 'all', query: '', risk: null, fxFlag: null, assetId: null, sort: 'valueDesc' };
+let trendMode = 'dual';        // 组合走势模式：dual / profit / rate / dd / cmp
 let trendRange = 'all';        // 走势区间：all / 1m / 3m / 6m / 1y / ytd / custom
 let trendCustom = null;        // 自定义区间 { start, end }（trendRange === 'custom' 时生效）
 let activeTab = 'assets';      // 主界面分页：assets（产品）/ stats（统计）
@@ -1214,13 +1234,14 @@ function profitChartHTML(s) {
     if (total > 0.004) { gainSum += total; gainCount++; }
     else if (total < -0.004) { lossSum += total; lossCount++; }
   });
-  // 迷你环图：正(盈利)红 / 负(亏损)绿，环面积按绝对值占比
+  // 迷你环图：环面积按绝对值占比。
+  // 配色：浮动盈亏=蓝、已实现盈亏=橙（两者同正/负时仍可一眼区分）；盈利=红、亏损=绿
   const donutOf = (items, centerLines) => Charts.ring(
     items.filter(it => it.value !== 0).map(it => ({
       key: it.label,
       label: it.label + ' ' + fmtSignedMoney(it.value, base),
       value: Math.abs(it.value),
-      color: it.value > 0 ? '#d70015' : '#1d9e49',
+      color: it.color || (it.value > 0 ? '#d70015' : '#1d9e49'),
     })),
     175,
     centerLines
@@ -1228,8 +1249,8 @@ function profitChartHTML(s) {
   return '<div class="profit-donuts">' +
     '<div class="donut"><div class="donut-title">浮动 vs 已实现</div>' +
       donutOf([
-        { label: '浮动盈亏', value: s.totalFloat },
-        { label: '已实现盈亏', value: s.totalRealized },
+        { label: '浮动盈亏', value: s.totalFloat, color: '#0071e3' },
+        { label: '已实现盈亏', value: s.totalRealized, color: '#ff9f0a' },
       ], ['总盈亏', fmtSignedMoney(s.totalProfit, base)]) + '</div>' +
     '<div class="donut"><div class="donut-title">盈利 vs 亏损产品</div>' +
       donutOf([
@@ -1245,7 +1266,16 @@ const TREND_MODES = {
   profit: { label: '累计收益',      desc: '市值 − 累计净投入（按现价估算）' },
   rate:   { label: '收益率',        desc: '累计收益 ÷ 累计投入（%）' },
   dd:     { label: '回撤',          desc: '距历史峰值的回撤（%）' },
+  cmp:    { label: '对比基准',      desc: '组合累计收益率 vs 基准指数累计收益率（均从 0% 起）' },
 };
+
+// 可选基准指数（腾讯代码）：沪深300 / 上证指数 / 中证500 / 创业板指
+const BENCHMARK_INDICES = [
+  { key: 'sh000300', label: '沪深300' },
+  { key: 'sh000001', label: '上证指数' },
+  { key: 'sh000905', label: '中证500' },
+  { key: 'sz399006', label: '创业板指' },
+];
 
 // 走势图区间（v6.5）：all=全部 / 1m / 3m / 6m / 1y / ytd=年初至今；自定义区间由 ce 面板传入
 const TREND_RANGES = {
@@ -1268,6 +1298,77 @@ function trendRangeCutoff(range, today) {
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 }
 
+/**
+ * 对比基准：拉取指数日K并按累计收益率（%）对齐（均从 0% 起，与组合累计收益率同量纲），
+ * 按组合走势点的日期对齐（取该日当天或之前最近一个交易日收盘），
+ * 与组合累计收益率并排绘制。数据异步到达后重绘当前图。
+ * benchKey：腾讯指数代码（如 sh000300）；pts 为组合已按区间截取的点。
+ */
+function drawBenchmarkLine(benchKey, pts, cutoff, series, firstNet) {
+  // 拉 400 个交易日（约 18 个月）：覆盖更早的买入起点；腾讯指数接口对超过一天的
+  // 区间只会返回最近 400 条（day 字段），不足时从其最早可用日起算
+  const days = 400;
+  fetchKline(benchKey, days)
+    .then(rows => {
+      // rows: [date, open, close, high, low]（date 为 'YYYYMMDD'）
+      const norm = rows.map(r => ({ date: String(r[0]), close: Number(r[2]) }))
+        .filter(x => isFinite(x.close) && x.close > 0);
+      if (norm.length < 2) return;
+      // 先截取区间（cutoff 含）内的交易日
+      const cutoffStr = cutoff ? cutoff.replace(/-/g, '') : null;
+      const within = cutoffStr ? norm.filter(x => x.date >= cutoffStr) : norm;
+      if (within.length < 2) return;
+      // 基准收益率起点 = 组合区间内第一个组合点的「当日或之前最近收盘」
+      // （而不是 within 的第一条——within 若从指数窗口起点开始，会过早固定基准导致错位）
+      const comboPts = pts.filter(p => !cutoffStr || p.date >= cutoff);
+      let baseClose = within[0].close;
+      if (comboPts.length) {
+        const first8 = comboPts[0].date.replace(/-/g, '');
+        for (let i = within.length - 1; i >= 0; i--) {
+          if (within[i].date.replace(/-/g, '') <= first8) { baseClose = within[i].close; break; }
+        }
+      }
+      // 与组合同量纲的「累计收益率（%）」：基准线 = 收盘 / 基准收盘 - 1，起点为 0
+      const ret = v => round2((v / baseClose - 1) * 100);
+      // 按组合点对齐：每个组合日期取截止当天或之前最近收盘；找不到则跳过
+      const aligned = pts.map(p => {
+        const p8 = p.date.replace(/-/g, '');
+        let close = null;
+        for (let i = within.length - 1; i >= 0; i--) {
+          if (within[i].date.replace(/-/g, '') <= p8) { close = within[i].close; break; }
+        }
+        return close != null ? { date: p.date, value: ret(close) } : null;
+      }).filter(q => q != null);
+      // 若组合所有点都早于指数窗口（极端情况），至少画指数窗口起点 → 第一点=0
+      if (aligned.length < 2 && within.length >= 2) {
+        aligned.push({ date: fmtIsoDate(within[0].date), value: 0 });
+        aligned.push({ date: fmtIsoDate(within[within.length - 1].date), value: ret(within[within.length - 1].close) });
+      }
+      if (aligned.length < 2) return;
+      const benchSeries = {
+        points: aligned,
+        color: '#ff9f0a', label: benchmarkLabel(benchKey) + '（%）', dash: true,
+      };
+      // 组合线存在且图仍是当前对比模式时才重绘（避免越界覆盖其它模式）
+      if (firstNet && series.length && trendMode === 'cmp') {
+        const merged = series.slice(0, 1).concat([benchSeries]);
+        $id('trend-chart').innerHTML = Charts.trendSeries(merged, { fmt: 'pct', zeroLine: true });
+      }
+    })
+    .catch(() => { /* 指数获取失败不弹窗：图仍显示组合线，图例缺基准线 */ });
+}
+
+/** 把 'YYYYMMDD' 转成 'YYYY-MM-DD'（指数日K的日期格式） */
+function fmtIsoDate(d8) {
+  return String(d8).slice(0, 4) + '-' + String(d8).slice(4, 6) + '-' + String(d8).slice(6);
+}
+
+/** 基准指数显示名（BENCHMARK_INDICES 内查找） */
+function benchmarkLabel(key) {
+  const hit = BENCHMARK_INDICES.find(b => b.key === key);
+  return hit ? hit.label : key;
+}
+
 function renderTrendChart() {
   const s = Calc.summary(state.assets, state.valuations, state.settings, state.trades);
   const base = state.settings.baseCurrency;
@@ -1283,7 +1384,32 @@ function renderTrendChart() {
   // 注意：portfolioTrend 的 net = Σ卖出 − Σ买入，即「负的累计净投入」；
   // 因此 累计净投入 = −net，累计收益 = 市值 − 净投入 = value + net。
   let series, opts;
-  if (trendMode === 'profit') {
+  if (trendMode === 'cmp') {
+    // 对比基准：组合累计收益率（%）与基准指数累计收益率（%）并排，
+    // 两条线都以区间起点为 0%（同起点、同量纲，可直接对比）
+    series = [];
+    const firstNet = pts.find(p => p.net < 0);
+    if (!firstNet) {
+      // 无净投入起点（全区间都没有买入记录）：图例给出明确空态提示
+      series.push({
+        points: pts.map(p => ({ date: p.date, value: null })),
+        color: '#0071e3', label: '组合累计收益率（%）', fill: true,
+      });
+      $id('trend-chart').innerHTML = '<div class="chart-empty">暂无对比数据（区间内没有买入投入，无法计算收益率起点）</div>';
+    }
+    if (firstNet && firstNet.net < 0) {
+      // 组合累计收益率（%）= 累计收益 ÷ 当前累计净投入（与「收益率」模式同口径）
+      series.push({
+        points: pts.map(p => ({ date: p.date, value: p.net < 0 ? round2((p.value + p.net) / (-p.net) * 100) : 0 })),
+        color: '#0071e3', label: '组合累计收益率（%）', fill: true,
+      });
+    }
+    // 基准线：异步取指数日K，关闭等渲染
+    // 读取设置里的基准指数（可在「设置 → 统计」里调整）
+    const benchKey = BENCHMARK_INDICES.some(b => b.key === (state.settings.benchmark || '')) ? state.settings.benchmark : 'sh000300';
+    drawBenchmarkLine(benchKey, pts, cutoff, series, firstNet);
+    opts = { fmt: 'pct', zeroLine: true };
+  } else if (trendMode === 'profit') {
     series = [{ points: pts.map(p => ({ date: p.date, value: round2(p.value + p.net) })), color: '#0071e3', label: '累计收益', fill: true }];
     opts = { fmt: 'money' };
   } else if (trendMode === 'rate') {
@@ -1374,6 +1500,16 @@ function filteredAssets() {
   let list = state.assets.slice();
   if (filters.category !== 'all') list = list.filter(a => a.category === filters.category);
   if (filters.currency !== 'all') list = list.filter(a => a.currency === filters.currency);
+  // 文本搜索：名称 / 代码 / 备注 / 子类别（不区分大小写）
+  const q = (filters.query || '').trim().toLowerCase();
+  if (q) {
+    list = list.filter(a =>
+      (a.name || '').toLowerCase().includes(q) ||
+      (a.symbol || '').toLowerCase().includes(q) ||
+      (a.note || '').toLowerCase().includes(q) ||
+      (a.subCategory || '').toLowerCase().includes(q)
+    );
+  }
   // 图表点击筛选（v6.1）：风险等级 / 外币币种 / 单个产品
   if (filters.assetId) list = list.filter(a => a.id === filters.assetId);
   if (filters.risk === '未设置') list = list.filter(a => !a.riskLevel);
@@ -1385,22 +1521,29 @@ function filteredAssets() {
     return {
       rate: pos.cost > 0 && pos.float != null ? pos.float / pos.cost : null,
       days: pos.days,
+      realized: pos.realized,
+      totalProfit: pos.totalProfit,
       baseValue: Calc.toBase(pos.marketValue, a.currency, state.settings),
       simpleAnnual: pos.days > 0 && pos.cost > 0 && pos.float != null ? pos.float / pos.cost * 365 / pos.days : null,
     };
   };
   list.sort((a, b) => {
     const ma = metricsOf(a), mb = metricsOf(b);
+    const rp = (x, d) => x == null ? d : x; // null（未计算）用哨兵值兜底
     switch (filters.sort) {
       case 'name': return a.name.localeCompare(b.name, 'zh');
-      case 'rateDesc': return (mb.rate - ma.rate);
-      case 'rateAsc': return (ma.rate - mb.rate);
+      case 'rateDesc': return rp(mb.rate, -Infinity) - rp(ma.rate, -Infinity);
+      case 'rateAsc': return rp(ma.rate, Infinity) - rp(mb.rate, Infinity);
       case 'daysDesc': return mb.days - ma.days;
       // 年化排序：未计算出年化（null）的排最后
       case 'annualDesc':
         return (mb.simpleAnnual == null ? -Infinity : mb.simpleAnnual) - (ma.simpleAnnual == null ? -Infinity : ma.simpleAnnual);
       case 'annualAsc':
         return (ma.simpleAnnual == null ? Infinity : ma.simpleAnnual) - (mb.simpleAnnual == null ? Infinity : mb.simpleAnnual);
+      case 'valueAsc': return (ma.baseValue || 0) - (mb.baseValue || 0);
+      // 已实现 / 总盈亏：未计算（null）排最后
+      case 'realizedDesc': return rp(mb.realized, -Infinity) - rp(ma.realized, -Infinity);
+      case 'profitDesc': return rp(mb.totalProfit, -Infinity) - rp(ma.totalProfit, -Infinity);
       default: return (mb.baseValue || 0) - (ma.baseValue || 0);
     }
   });
@@ -1464,7 +1607,8 @@ function assetCardHTML(asset) {
     (isStock ? '<span>持仓 ' + fmtQty(m.qty) + ' 股</span>' : '') +
     (isFx && m.qty > 0 ? '<span>' + esc(asset.foreignCurrency || '外币') + ' 余额 ' + fmtQty(m.qty) + '</span>' : '') +
     (sell.minDays != null && !sell.settled ? '<span>最低持有 ' + sell.minDays + ' 天</span>' : '') +
-    (m.received > 0 ? '<span>已回收 ' + fmtMoney(m.received, asset.currency) + '</span>' : '');
+    (m.received > 0 ? '<span>已回收 ' + fmtMoney(m.received, asset.currency) + '</span>' : '') +
+    (m.income > 0 ? '<span style="color:var(--red)">💰 累计分红/利息 ' + fmtMoney(m.income, asset.currency) + '</span>' : '');
 
   // 指标区：股票侧重视数量与单价；非股票侧重视金额（持仓总金额 / 累计投入）
   let figures;
@@ -1558,6 +1702,9 @@ function renderList() {
 }
 
 function renderFilters() {
+  const search = $id('filter-search');
+  if (search) search.value = filters.query || '';
+
   const catSel = $id('filter-category');
   catSel.innerHTML = '<option value="all">全部类别</option>' +
     Object.keys(CATEGORIES).map(k => '<option value="' + k + '">' + CATEGORIES[k].label + '</option>').join('');
@@ -1842,6 +1989,7 @@ function fmtQty(n) {
 function tradeFormHTML(asset, type, trade) {
   const t = trade || { date: todayStr(), quantity: '', price: '', fee: '', note: '', minHoldDays: '' };
   const isBuy = type === 'buy';
+  const isIncome = type === 'income';
   const isStock = asset.category === 'stock';
   const isFx = asset.category === 'fx';
   const fxName = asset.foreignCurrency || '外币';
@@ -1853,6 +2001,21 @@ function tradeFormHTML(asset, type, trade) {
   const defMode = trade ? (trade.mode || (isFx ? 'exchange' : 'qty')) : (isStock ? 'qty' : (isFx ? 'exchange' : 'amount'));
   // 当前持仓市值（优先用现价/汇率，行情缺失时回退最近成交价）——供卖出「全部卖出」一键填入
   const pos = Calc.tradePosition(asset, state.trades, asset.lastPrice != null ? Number(asset.lastPrice) : null);
+
+  // 分红/利息/场外现金流（income）：不填数量单价，只填金额；正=收到，负=场外补充资金
+  if (isIncome) {
+    const amtVal = (t.quantity != null && t.quantity !== '') && (t.price != null && t.price !== '')
+      ? round2(Number(t.quantity) * Number(t.price))
+      : '';
+    return '<div class="form-grid">' +
+      '<div class="field"><label>日期 *</label><input id="t-date" type="date" value="' + esc(t.date) + '"></div>' +
+      '<div class="field"><label>金额（' + esc(asset.currency) + '）*</label>' +
+        '<input id="t-amount" type="number" step="any" placeholder="正数 = 收到分红/利息；负数 = 场外补充资金" value="' + esc(amtVal) + '">' +
+        '<div class="hint">正数表示收到（分红、利息、赎回收益等落袋收益）；负数表示从场外补充资金（不影响持仓与成本）。</div></div>' +
+      '<div class="field"><label>手续费（可选）</label><input id="t-fee" type="number" min="0" step="0.01" placeholder="0.00" value="' + esc(t.fee) + '"></div>' +
+      '<div class="field full"><label>备注（可选）</label><input id="t-note" type="text" placeholder="如：季度分红 / 货币基金利息 / 追加本金" value="' + esc(t.note) + '"></div>' +
+    '</div>';
+  }
 
   const modeSwitch = '<div class="field full"><label>录入方式</label>' +
     '<div style="display:flex;gap:10px;flex-wrap:wrap">' +
@@ -1916,11 +2079,15 @@ function openTradeForm(assetId, type, tradeId) {
   const asset = getAsset(assetId);
   const trade = tradeId ? state.trades.find(x => x.id === tradeId) : null;
   const fxName = asset.foreignCurrency || '外币';
-  const title = trade ? '编辑交易 · ' + asset.name : (type === 'buy' ? '买入 · ' : '卖出 · ') + asset.name;
+  const title = trade ? '编辑交易 · ' + asset.name
+    : (type === 'income' ? '分红 / 利息 · ' : (type === 'buy' ? '买入 · ' : '卖出 · ')) + asset.name;
   // 当前持仓（带现价）：卖出一键填入「全部卖出」按钮需要同一份持仓数据
   const pos = Calc.tradePosition(asset, state.trades, asset.lastPrice != null ? Number(asset.lastPrice) : null);
   openModal(title, tradeFormHTML(asset, trade ? trade.type : type, trade),
     () => submitTrade(assetId, tradeId, trade ? trade.type : type));
+
+  // 分红/利息表单：只有金额字段，无需录入方式绑定
+  if (type === 'income' || (trade && trade.type === 'income')) return;
 
   // 录入方式切换：份数×单价 ⇄ 总金额（外币另有「兑换」方式）
   const qtyRadio = document.querySelector('input[name="tmode"][value="qty"]');
@@ -1982,6 +2149,37 @@ function openTradeForm(assetId, type, tradeId) {
 function submitTrade(assetId, tradeId, type) {
   const asset = getAsset(assetId);
   const date = $id('t-date').value;
+  const note = $id('t-note').value.trim();
+
+  // 分红/利息/场外现金流：只填「金额」（正=收到、负=补充资金）+ 手续费 + 日期 + 备注。
+  // 入库时 quantity 记符号（1 / -1）、price 记金额绝对值，使 q×p = 实际现金流金额。
+  if (type === 'income') {
+    const amt = parseFloat($id('t-amount').value);
+    if (!isFinite(amt) || amt === 0) { alert('请填写金额（正数 = 收到分红/利息，负数 = 场外补充资金）。'); return; }
+    if (!date || parseDate(date) == null) { alert('日期格式不正确。'); return; }
+    const feeRaw = $id('t-fee').value.trim();
+    const fee = feeRaw === '' || !isFinite(parseFloat(feeRaw)) ? 0 : parseFloat(feeRaw);
+    if (fee < 0) { alert('手续费不能为负。'); return; }
+    const qty = amt >= 0 ? 1 : -1;
+    const price = roundPriceSoft(Math.abs(amt));
+    if (tradeId) {
+      const t = state.trades.find(x => x.id === tradeId);
+      if (t) {
+        t.date = date; t.quantity = qty; t.price = price;
+        t.fee = round2(fee); t.note = note; t.mode = 'income';
+      }
+    } else {
+      state.trades.push({
+        id: uid('trade_'), assetId, type: 'income', date,
+        quantity: qty, price, fee: round2(fee), note,
+        mode: 'income', minHoldDays: null,
+        createdAt: Date.now(),
+      });
+    }
+    saveState(); renderAll(); closeModal();
+    return;
+  }
+
   const modeEl = document.querySelector('input[name="tmode"]:checked');
   const mode = modeEl ? modeEl.value : 'qty';
   let qty, price;
@@ -2031,7 +2229,6 @@ function submitTrade(assetId, tradeId, type) {
       minHoldDays = v;
     }
   }
-  const note = $id('t-note').value.trim();
   qty = roundQty(qty);
   // 单价只做浮点误差修整、不取整：总金额/兑换模式的单价是按「金额 ÷ 数量」派生的，
   // 若被 roundPrice 舍成 4 位小数（如 1.000871 → 1.0009），会把误差放大进卖出金额，
@@ -2068,15 +2265,26 @@ function tradeTimelineHTML(asset, pos) {
   const rows = pos.events.map(e => {
     const t = e.trade;
     const isBuy = t.type === 'buy';
+    const isIncome = t.type === 'income';
     const amount = t.quantity * t.price;
-    const realizedTxt = isBuy
-      ? '<span class="tl-delta" style="color:var(--ink-3)">买入</span>'
-      : '<span class="tl-delta ' + (e.realized >= 0 ? 'money-red' : 'money-green') + '">已实现 ' + fmtSignedMoney(e.realized, asset.currency) + '</span>';
+    const realizedTxt = isIncome
+      ? (e.income >= 0
+          ? '<span class="tl-delta money-red">收入 ' + fmtSignedMoney(e.income, asset.currency) + '</span>'
+          : '<span class="tl-delta" style="color:var(--ink-3)">补充资金</span>')
+      : isBuy
+        ? '<span class="tl-delta" style="color:var(--ink-3)">买入</span>'
+        : '<span class="tl-delta ' + (e.realized >= 0 ? 'money-red' : 'money-green') + '">已实现 ' + fmtSignedMoney(e.realized, asset.currency) + '</span>';
     return '<div class="tl-item" style="grid-template-columns:88px 1fr auto auto">' +
       '<span class="tl-date">' + esc(t.date) + '</span>' +
-      '<span class="tl-value">' + (isBuy ? '🟢 买入 ' : '🔴 卖出 ') + fmtQty(t.quantity) + ' × ' + fmtQty(t.price) +
-        (isBuy && t.minHoldDays != null ? '<span class="tag alt" style="margin-left:6px">锁 ' + t.minHoldDays + ' 天</span>' : '') + '</span>' +
-      '<span class="tl-delta" style="font-feature-settings:tnum">' + fmtMoney(amount, asset.currency) + (t.fee ? '（费 ' + fmtMoney(t.fee, asset.currency) + '）' : '') + '</span>' +
+      '<span class="tl-value">' +
+        (isIncome
+          ? (e.income >= 0 ? '💰 分红/利息 ' : '💸 场外资金 ')
+          : (isBuy ? '🟢 买入 ' : '🔴 卖出 ') + fmtQty(t.quantity) + ' × ' + fmtQty(t.price)) +
+        (isBuy && t.minHoldDays != null ? '<span class="tag alt" style="margin-left:6px">锁 ' + t.minHoldDays + ' 天</span>' : '') +
+      '</span>' +
+      '<span class="tl-delta" style="font-feature-settings:tnum">' +
+        (isIncome ? realizedTxt : fmtMoney(Math.abs(amount), asset.currency) + (t.fee ? '（费 ' + fmtMoney(t.fee, asset.currency) + '）' : '')) +
+      '</span>' +
       '<span class="tl-ops">' +
         '<button data-action="editTrade" data-id="' + t.id + '" title="编辑">✎</button>' +
         '<button data-action="deleteTrade" data-id="' + t.id + '" class="del" title="删除">🗑</button>' +
@@ -2087,6 +2295,7 @@ function tradeTimelineHTML(asset, pos) {
   const addBtns = '<div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">' +
     '<button data-action="addBuy" class="btn btn-mini btn-primary">＋ 买入</button>' +
     '<button data-action="addSell" class="btn btn-mini ghost">− 卖出</button>' +
+    '<button data-action="addIncome" class="btn btn-mini ghost">💰 分红/利息</button>' +
   '</div>';
   return '<div class="tl-head" style="margin-bottom:2px"><span>交易记录（' + pos.events.length + '）</span>' +
     '<span>持仓 ' + fmtQty(pos.qty) + ' · 均价 ' + fmtQty(pos.avgCost) + '</span></div>' +
@@ -2330,6 +2539,7 @@ function settingsHTML(settings) {
   const remDaysVal = (rem.days != null && Number(rem.days) > 0) ? Number(rem.days) : 7;
   return '<div class="settings-tabs">' +
       '<button type="button" class="set-tab on" data-tab="basic">汇率与行情</button>' +
+      '<button type="button" class="set-tab" data-tab="appearance">外观</button>' +
       '<button type="button" class="set-tab" data-tab="stats">统计</button>' +
       '<button type="button" class="set-tab" data-tab="backup">备份</button>' +
       '<button type="button" class="set-tab" data-tab="security">安全</button>' +
@@ -2361,6 +2571,16 @@ function settingsHTML(settings) {
         '<div class="hint" style="margin-top:8px">行情来自腾讯公开免费接口，仅供记录与计算参考；接口不可用时用卡片上的「✎ 现价 / ✎ 市值」手动录入。</div>' +
       '</div>' +
     '</section>' +
+    '<section class="settings-section" data-section="appearance">' +
+      '<h4 class="settings-sec-title">外观</h4>' +
+      '<div class="field" style="margin-bottom:4px"><label>主题模式</label>' +
+      '<select id="s-theme">' +
+        '<option value="auto"' + ((settings.themeMode || 'auto') === 'auto' ? ' selected' : '') + '>跟随系统</option>' +
+        '<option value="light"' + ((settings.themeMode || 'auto') === 'light' ? ' selected' : '') + '>浅色</option>' +
+        '<option value="dark"' + ((settings.themeMode || 'auto') === 'dark' ? ' selected' : '') + '>深色</option>' +
+      '</select>' +
+      '<div class="hint">选择「跟随系统」时随手机/电脑系统的深浅色自动切换；也可手动固定为浅色或深色。</div></div>' +
+    '</section>' +
     '<section class="settings-section" data-section="stats">' +
       '<h4 class="settings-sec-title">统计</h4>' +
       '<div class="field" style="margin-bottom:10px"><label>无风险年化利率（%，夏普比率用）</label>' +
@@ -2372,6 +2592,11 @@ function settingsHTML(settings) {
       '<div class="field" style="margin-bottom:4px"><label>单一标的上限阈值（%）</label>' +
       '<input type="number" id="s-cap" min="0" max="100" step="1" value="' + esc(settings.singleAssetCap != null ? settings.singleAssetCap : 20) + '">' +
       '<div class="hint">集中度统计中，单一标的占比超过该比例时高亮提示。</div></div>' +
+      '<div class="field" style="margin-bottom:4px"><label>走势「对比基准」指数</label>' +
+      '<select id="s-benchmark">' +
+        BENCHMARK_INDICES.map(b => '<option value="' + b.key + '"' + ((settings.benchmark || 'sh000300') === b.key ? ' selected' : '') + '>' + b.label + '</option>').join('') +
+      '</select>' +
+      '<div class="hint">组合走势切换「对比基准」模式时，用该指数做归一化对比。</div></div>' +
     '</section>' +
     '<section class="settings-section" data-section="backup">' +
       '<h4 class="settings-sec-title">备份</h4>' +
@@ -2497,6 +2722,9 @@ function openSettings() {
     btn.disabled = false;
     alert('行情刷新完成；失败的产品保留原值，可稍后单个重试或手动录价。');
   };
+
+  // 外观：主题模式切换立即生效（无需等「保存设置」）
+  bindThemeSettings();
 
   // 清空全部数据（危险操作，二次确认）
   $id('s-clear').onclick = clearAll;
@@ -2766,6 +2994,11 @@ function openSettings() {
       if (!isFinite(cap) || cap < 0 || cap > 100) { alert('单一标的上限阈值必须在 0–100 之间（%）。'); return; }
       state.settings.singleAssetCap = cap;
     }
+    // 统计设置：走势「对比基准」指数
+    const benchSel = $id('s-benchmark');
+    if (benchSel) {
+      state.settings.benchmark = benchSel.value || 'sh000300';
+    }
     // 安全（PIN 锁）设置：勾选启用 → 立即用当前输入的 PIN 启用并加锁（开始生效）
     const pinToggle = $id('s-pin-toggle');
     if (pinToggle) {
@@ -2784,9 +3017,26 @@ function openSettings() {
         else { alert('PIN 不正确，已保留当前 PIN 锁。'); pinToggle.checked = true; }
       }
     }
+    // 外观：主题模式（跟随系统 / 浅色 / 深色）
+    const themeSel = $id('s-theme');
+    if (themeSel) {
+      state.settings.themeMode = themeSel.value || 'auto';
+      applyTheme();
+    }
     saveState(); renderAll(); closeModal();
     // 若刚启用了 PIN 锁（modalOnOk 内已 pinLock），关闭保存后再显示遮罩以确保数据不可见
     if (pinEnabled()) pinLock();
+  };
+}
+
+/** 主题设置：切换时立即生效（无需等「保存设置」），并持久化 */
+function bindThemeSettings() {
+  const themeSel = $id('s-theme');
+  if (!themeSel) return;
+  themeSel.onchange = () => {
+    state.settings.themeMode = themeSel.value || 'auto';
+    applyTheme();
+    saveState();
   };
 }
 
@@ -3728,6 +3978,65 @@ function importPayloadText(text) {
   });
 }
 
+/** 数据合并导入：把另一份备份的资产与交易合并进当前数据，不覆盖已有数据。
+ *  - 资产：按 id 精确匹配；已存在的跳过（保留本地最新信息），不存在的追加（若 id 冲突则换新 id）。
+ *  - 交易：追加到本地；按 (assetId,date,type,quantity,price,fee,note) 全等去重，防止重复记录。
+ *  - 设置 / 估值：不合并（保留本地设置；估值数组恒为空）。
+ *  - 返回合并结果统计 {newAssets, newTrades}，供 UI 提示。
+ */
+function mergePayloadText(text) {
+  let data;
+  try {
+    data = JSON.parse(text);
+    if (!data || !Array.isArray(data.assets) || !Array.isArray(data.valuations)) {
+      throw new Error('结构不正确（缺少 assets/valuations）');
+    }
+  } catch (e) {
+    alert('合并导入失败：不是有效的 EcoCal 备份内容（' + e.message + '）');
+    return null;
+  }
+  const localIds = new Set(state.assets.map(a => a.id));
+  const idMap = {};       // 导入资产 id → 本地 id（新建则新 id）
+  let newAssets = 0;
+  const mergedAssets = state.assets.slice();
+  data.assets.forEach(a => {
+    if (!a || typeof a.id !== 'string') return;
+    if (localIds.has(a.id) || idMap[a.id]) { idMap[a.id] = a.id; return; }
+    // 新资产：保留原 id（若被占用则换新 id，理论上不会）
+    const newId = a.id;
+    idMap[a.id] = newId;
+    mergedAssets.push(Object.assign({}, a, { id: newId }));
+    newAssets++;
+  });
+  // 交易去重指纹：本地现有交易
+  const seen = new Set();
+  state.trades.forEach(t => {
+    if (t && t.assetId) seen.add(t.assetId + '|' + (t.date || '') + '|' + t.type + '|' + t.quantity + '|' + t.price + '|' + (t.fee || 0) + '|' + (t.note || ''));
+  });
+  let newTrades = 0;
+  const mergedTrades = state.trades.slice();
+  (data.trades || []).forEach(t => {
+    if (!t || typeof t.assetId !== 'string') return;
+    const targetId = idMap[t.assetId];
+    if (!targetId) return; // 资产都不在导入清单，跳过（孤儿交易）
+    const fp = targetId + '|' + (t.date || '') + '|' + t.type + '|' + t.quantity + '|' + t.price + '|' + (t.fee || 0) + '|' + (t.note || '');
+    if (seen.has(fp)) return;
+    seen.add(fp);
+    mergedTrades.push(Object.assign({}, t, { assetId: targetId }));
+    newTrades++;
+  });
+  return { newAssets, newTrades, mergedAssets, mergedTrades };
+}
+
+/** 应用合并结果到 state 并持久化 */
+function applyMerge(result) {
+  if (!result) return;
+  state.assets = result.mergedAssets;
+  state.trades = result.mergedTrades;
+  closeModal();
+  saveState();
+}
+
 /** 应用备份数据到 state 并持久化（自动执行 v6 迁移，兼容历史备份） */
 function applyPayload(data) {
   state.assets = Array.isArray(data.assets) ? data.assets : [];
@@ -3743,12 +4052,13 @@ function applyPayload(data) {
   saveState();
 }
 
-/** 导入面板：选择文件 或 粘贴 JSON（手机友好） */
+/** 导入面板：选择文件 或 粘贴 JSON（手机友好）。支持「覆盖导入」与「合并导入」两种模式。 */
 function openImportModal() {
-  const html = '<div class="hint" style="margin-bottom:12px">两种方式二选一，导入将<b>覆盖当前全部数据</b>：</div>' +
+  const html = '<div class="hint" style="margin-bottom:12px">两种方式二选一：<b>覆盖导入</b>会用备份替换当前全部数据；<b>合并导入</b>会把备份里的新资产与交易追加进当前数据（按资产 id / 交易内容自动去重，不覆盖本地设置）。</div>' +
     '<div style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap">' +
       '<button type="button" id="imp-file" class="btn btn-ghost">📁 选择 .json 文件</button>' +
       '<button type="button" id="imp-paste" class="btn btn-primary">📋 导入下方粘贴内容</button>' +
+      '<button type="button" id="imp-merge" class="btn btn-ghost">🤝 合并下方粘贴内容</button>' +
     '</div>' +
     '<div class="hint" style="margin-bottom:6px">或直接粘贴备份 JSON 文本（手机浏览器更快）：</div>' +
     '<textarea id="imp-text" rows="8" spellcheck="false" placeholder="粘贴 ecocal-backup-xxx.json 的完整内容" ' +
@@ -3758,8 +4068,25 @@ function openImportModal() {
     const text = $id('imp-text').value.trim();
     if (!text) { alert('请先粘贴备份内容，或使用「选择 .json 文件」。'); return; }
     importPayloadText(text);
-  }, '导入');
+  }, '覆盖导入');
   $id('imp-file').onclick = () => $id('import-input').click();
+  // 合并导入：追加新资产/交易，去重，不覆盖本地设置
+  $id('imp-merge').onclick = () => {
+    const text = $id('imp-text').value.trim();
+    if (!text) { alert('请先粘贴备份内容，或使用「选择 .json 文件」。'); return; }
+    const result = mergePayloadText(text);
+    if (!result) return;
+    if (result.newAssets === 0 && result.newTrades === 0) {
+      alert('没有发现新的资产或交易（内容与当前数据重复或为空）。');
+      return;
+    }
+    confirmAction('合并导入数据',
+      '将追加 ' + result.newAssets + ' 个新资产、' + result.newTrades + ' 笔新交易到当前数据，已有资产与交易保持不变。确定继续吗？', () => {
+        applyMerge(result);
+        renderAll();
+        alert('合并导入成功：新增 ' + result.newAssets + ' 个资产、' + result.newTrades + ' 笔交易。');
+      });
+  };
 } 
 
 /* ---------------- 撤销（Undo）支持 ---------------- */
@@ -3907,6 +4234,40 @@ function securityHTML() {
   '</div>';
 }
 
+/* ---------------- 深色模式（外观主题） ---------------- */
+/**
+ * 应用外观主题：根据 settings.themeMode（auto/light/dark）与系统深浅色偏好，
+ * 在 <html> 上设置 data-theme="dark" / "light"（CSS 变量据此切换）。
+ * - auto：跟随系统 prefers-color-scheme，并在系统切换时自动更新
+ * - light：强制浅色（移除 data-theme）
+ * - dark ：强制深色
+ * 无 DOM 环境（单元测试）静默跳过。
+ */
+function applyTheme() {
+  const root = document.documentElement;
+  if (!root || !root.setAttribute) return;
+  const mode = (state.settings.themeMode || 'auto');
+  let dark = false;
+  if (mode === 'dark') dark = true;
+  else if (mode === 'light') dark = false;
+  else {
+    // auto：跟随系统（matchMedia 不存在时按浅色处理）
+    dark = (typeof window !== 'undefined' && typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-color-scheme: dark)').matches) === true;
+  }
+  // 仅当需要 dark 时设置 data-theme；light/auto-浅色则移除，让 CSS 变量回落到默认浅色
+  if (dark) root.setAttribute('data-theme', 'dark');
+  else root.removeAttribute('data-theme');
+}
+/** 监听系统深浅色切换（仅 auto 模式需要实时响应）——由 bindEvents 注册 */
+function bindThemeListener() {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+  const mq = window.matchMedia('(prefers-color-scheme: dark)');
+  // 兼容旧 Safari 的 addListener 与新标准的 addEventListener
+  if (mq.addEventListener) mq.addEventListener('change', applyTheme);
+  else if (mq.addListener) mq.addListener(applyTheme);
+}
+
 /* ---------------- 顶部吸附定位（Tab / 筛选栏） ---------------- */
 /**
  * 把顶栏、Tab 栏的实测高度写入 CSS 变量，供样式中的 position:sticky 使用。
@@ -3937,6 +4298,8 @@ function bindEvents() {
     if (topbarEl) resizeObserver.observe(topbarEl);
     if (tabsEl) resizeObserver.observe(tabsEl);
   }
+  // 系统深浅色切换监听（auto 模式实时跟随）
+  bindThemeListener();
 
   // ---- 启动 PIN 锁：遮罩交互 ----
   const pinUnlockBtn = $id('pin-unlock-btn');
@@ -4003,6 +4366,9 @@ function bindEvents() {
       case 'addSell':
         openTradeForm(asset.id, 'sell', null);
         break;
+      case 'addIncome':
+        openTradeForm(asset.id, 'income', null);
+        break;
       case 'editTrade': {
         const t = state.trades.find(x => x.id === btn.dataset.id);
         if (t) openTradeForm(asset.id, null, t.id);
@@ -4046,6 +4412,11 @@ function bindEvents() {
   $id('filter-category').onchange = (e) => { filters.category = e.target.value; renderList(); };
   $id('filter-currency').onchange = (e) => { filters.currency = e.target.value; renderList(); };
   $id('filter-sort').onchange = (e) => { filters.sort = e.target.value; renderList(); };
+  const searchInput = $id('filter-search');
+  if (searchInput) {
+    searchInput.oninput = (e) => { filters.query = e.target.value; renderList(); };
+    searchInput.onkeydown = (e) => { if (e.key === 'Escape') { filters.query = ''; searchInput.value = ''; renderList(); } };
+  }
 
   $id('btn-settings').onclick = openSettings;
   $id('btn-help').onclick = openHelp;
@@ -4225,6 +4596,8 @@ function init() {
     seedDemo();
   }
   renderAll();
+  // 深色模式：加载后按设置应用主题，并监听系统深浅色切换（auto 模式实时跟随）
+  applyTheme();
   // Tab / 筛选栏吸附定位：测量顶栏高度并写入 CSS 变量
   updateStickyOffsets();
   // 云备份：页面切后台/关闭时立即同步未上传的改动（防抖窗口内不等满 60s）
@@ -4274,6 +4647,7 @@ window.__EcoCal = {
   // 走势区间（供测试/调试）
   TREND_RANGES, trendRangeCutoff, openCustomRange,
   openExportModal, openImportModal, importPayloadText, applyPayload, buildExportPayload, buildCloudPayload,
+  mergePayloadText, applyMerge,
   migrateToTrades, migrateToV6, fxRateFromCache, daysAgoStr,
   normalizeSymbol, symbolToCurrency, fetchQuote, fetchKline, fetchStockInfo,
   refreshQuoteForAsset, refreshAllQuotes, manualPriceline,
@@ -4288,6 +4662,12 @@ window.__EcoCal = {
   undoWrap, undoApply, undoSnapshot,
   // 导出 Excel（供测试/调试）
   buildXlsxExcel, downloadXlsx,
+  // 搜索/排序（供测试/调试）
+  filteredAssets, renderFilters, filters,
+  // 分红/利息/场外现金流（供测试/调试）
+  tradeTimelineHTML, assetCardHTML, Calc,
+  // 深色模式（供测试/调试）
+  applyTheme, bindThemeListener, bindThemeSettings,
 };
 
 })();

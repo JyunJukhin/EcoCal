@@ -47,9 +47,12 @@ const tmodeStubs = {
   exchange: { value: 'exchange', checked: false, onchange: null },
 };
 globalThis.window = globalThis;
+const docElStub = makeEl('html');
+docElStub.removeAttribute = k => { if (docElStub._attrs) delete docElStub._attrs[k]; };
 globalThis.document = {
   readyState: 'complete',
   getElementById(id) { return elements[id] || (elements[id] = makeEl(id)); },
+  get documentElement() { return docElStub; },
   querySelector(sel) {
     // 交易录入方式单选：按选择器返回对应桩；:checked 返回当前选中项
     if (sel && sel.includes('tmode')) {
@@ -658,6 +661,75 @@ assert(!fundTradeHtml.includes('t-exchange-row') && !fundTradeHtml.includes('兑
 EcoCal.submitTrade('fxx', null, 'buy'); // 兑换分支应直接拦截
 assert(EcoCal.state.trades.length === 0, '非外币资产用兑换方式提交被拦截');
 setTmode(false); // 恢复默认：总金额
+
+/* ---- 4.19 分红 / 利息 / 场外现金流（income） ---- */
+const incAsset = { id: 'inc1', name: '高息股', category: 'stock', subCategory: '股息', currency: 'CNY',
+  principal: 0, quantity: null, startDate: null, note: '', lastPrice: 12, symbol: 'sh600000' };
+EcoCal.state.assets = [incAsset];
+EcoCal.state.trades = [];
+// 1) income 表单：只显示金额 / 日期 / 手续费 / 备注，无录入方式、无份数、单价
+EcoCal.openTradeForm('inc1', 'income', null);
+let incomeHtml = elements['modal-body'].innerHTML || '';
+assert(incomeHtml.includes('t-amount') && incomeHtml.includes('t-date'), 'income 表单含金额与日期');
+assert(!incomeHtml.includes('name="tmode"') && !incomeHtml.includes('t-qty-row') && !incomeHtml.includes('t-price-row'), 'income 表单无录入方式/份数/单价');
+assert(incomeHtml.includes('正数 = 收到分红/利息') && incomeHtml.includes('场外补充资金'), 'income 表单提示：正数=收到、负数=补充资金');
+// 2) 提交分红：金额 500 → quantity 1、price 500、type income
+touch('t-amount').value = '500';
+touch('t-date').value = '2026-04-01';
+touch('t-fee').value = '';
+touch('t-note').value = '季度分红';
+EcoCal.submitTrade('inc1', null, 'income');
+assert(EcoCal.state.trades.length === 1, 'income 提交生成一笔交易');
+const incT0 = EcoCal.state.trades[0];
+assert(incT0.type === 'income' && incT0.quantity === 1 && approx(incT0.price, 500), 'income 入库存 qty=1 price=500（q×p=金额）');
+assert(incT0.note === '季度分红' && incT0.mode === 'income', 'income 备注与 mode 保存');
+// 3) income 不影响持仓/成本；正数流入计入 realized
+const incPosAfter = Calc.tradePosition(incAsset, EcoCal.state.trades, 12);
+assert(incPosAfter.qty === 0 && incPosAfter.cost === 0, 'income 不改变持仓与成本');
+assert(approx(incPosAfter.realized, 500) && approx(incPosAfter.income, 500), 'income 正数流入计入已实现落袋收益（realized=income=500）');
+// 4) 负金额 = 场外补充资金：不进 realized，仍累计 income
+EcoCal.openTradeForm('inc1', 'income', null);
+touch('t-amount').value = '-300';
+touch('t-date').value = '2026-04-02';
+EcoCal.submitTrade('inc1', null, 'income');
+const incPosNeg = Calc.tradePosition(incAsset, EcoCal.state.trades, 12);
+assert(approx(incPosNeg.realized, 500), '场外补充资金（负数）不进已实现盈亏');
+assert(approx(incPosNeg.income, 200), 'income 累计 = 500 − 300 = 200');
+// 5) 0 金额被拦截
+EcoCal.openTradeForm('inc1', 'income', null);
+touch('t-amount').value = '0';
+EcoCal.submitTrade('inc1', null, 'income');
+assert(EcoCal.state.trades.length === 2, '金额为 0 的 income 被拦截');
+// 6) 编辑 income 交易：金额字段回填 q×p，提交更新不新增
+EcoCal.openTradeForm('inc1', null, incT0.id);
+incomeHtml = elements['modal-body'].innerHTML || '';
+assert(incomeHtml.includes('value="500"'), '编辑 income：金额回填为 500');
+touch('t-amount').value = '550';
+EcoCal.submitTrade('inc1', incT0.id, 'income');
+assert(EcoCal.state.trades.length === 2, '编辑 income 不新增交易');
+const incT0b = EcoCal.state.trades.find(x => x.id === incT0.id);
+assert(incT0b && incT0b.quantity === 1 && approx(incT0b.price, 550), '编辑 income：金额更新为 550');
+// 7) 时间线渲染：income 事件带「💰 分红/利息」「收入」徽章
+const incTimeline = (() => {
+  const pos = Calc.tradePosition(incAsset, EcoCal.state.trades, 12);
+  return EcoCal.tradeTimelineHTML(incAsset, pos);
+})();
+assert(incTimeline.includes('💰 分红/利息'), 'income 时间线渲染分红图标');
+assert(incTimeline.includes('收入 '), 'income 时间线渲染「收入」徽章');
+// 8) 时间线按钮区含「分红/利息」入口
+assert(incTimeline.includes('addIncome'), '时间线含「分红/利息」按钮');
+// 9) summary 不因 income 变化持仓口径，totalRealized 仅含收到部分（场外补充不进）
+const incSum = Calc.summary([incAsset], [], EcoCal.state.settings, EcoCal.state.trades);
+assert(approx(incSum.totalRealized, 550), 'summary.totalRealized = 分红 550（补充资金 -300 不计入已实现）');
+// 10) 卡片 metaLine 含累计分红（income>0）
+const incCardHtml = EcoCal.assetCardHTML(incAsset);
+assert(incCardHtml.includes('累计分红/利息'), '卡片 meta 显示「💰 累计分红/利息」');
+// 11) income 不影响 lots（不消耗批次）
+const incLots = Calc.lots(incAsset, EcoCal.state.trades, EcoCal.todayStr());
+assert(Array.isArray(incLots) && incLots.length === 0, 'income 不生成批次');
+// 12) xirr 视 income 为现金流入（正负混合可解）
+const incXirr = Calc.xirr([incAsset], EcoCal.state.trades, EcoCal.state.settings, '2026-12-31');
+assert(incXirr == null || isFinite(incXirr), 'xirr 对 income 正负混合可解或返回 null');
 
 /* ---- 5. 持久化往返：seedDemo → save → load ---- */
 EcoCal.seedDemo();
@@ -1334,7 +1406,9 @@ assert(xlsxClicked, 'Excel：锚点 click 被触发');
   const html = EcoCal.settingsHTML(savedSettings);
   assert(html.includes('class="set-tab on" data-tab="basic"'), '设置页：四 Tab（汇率与行情）已渲染且默认选中');
   assert(html.includes('data-tab="stats"') && html.includes('data-tab="backup"') && html.includes('data-tab="security"'), '设置页：四 Tab（统计/备份/安全）齐备');
+  assert(html.includes('data-tab="appearance"') && html.includes('>外观</button>'), '设置页：外观 Tab 齐备');
   assert(html.includes('class="settings-section" data-section="basic"') && html.includes('data-section="stats"') && html.includes('data-section="backup"') && html.includes('data-section="security"'), '设置页：四个分区（汇率与行情/统计/备份/安全）齐备');
+  assert(html.includes('data-section="appearance"') && html.includes('id="s-theme"'), '设置页：外观分区与主题下拉存在');
   assert(html.includes('class="settings-sec-title"') && html.includes('settings-sections'), '设置页：分区标题与容器存在');
   assert(html.includes('id="rem-enabled"') && html.includes('id="rem-days"'), '设置页：备份提醒开关与天数输入存在');
   assert(html.includes('id="wd-backup"') && html.includes('id="g-backup"'), '设置页：备份分区含 WebDAV 与 Gitee 面板');
@@ -1348,7 +1422,7 @@ assert(xlsxClicked, 'Excel：锚点 click 被触发');
   const savedGEB = document.getElementById;
   const savedQSA = document.querySelectorAll;
   const setEls = {};
-  ['s-base','s-fetch','s-autofetch','s-updated','s-autoquote','s-refresh-all','s-rf','s-liab','s-cap',
+  ['s-base','s-fetch','s-autofetch','s-updated','s-autoquote','s-refresh-all','s-rf','s-liab','s-cap','s-theme',
    'wd-url','wd-user','wd-pass','wd-dir','wd-test','wd-backup','wd-restore','wd-clear-pass','wd-status','wd-enabled',
    'g-owner','g-repo','g-token','g-path','g-test','g-backup','g-restore','g-clear-token','g-status','g-enabled',
    'rem-enabled','rem-days','s-clear','s-pin-toggle','s-pin','s-pin-reset','modal-ok','modal-close','modal-cancel'].forEach(id => {
@@ -1358,17 +1432,17 @@ assert(xlsxClicked, 'Excel：锚点 click 被触发');
   // document.querySelectorAll('.rate-input') → []
   document.querySelectorAll = sel => {
     if (sel === '.rate-input') return [];
-    if (sel === '.set-tab') return [setEls.__tab_basic, setEls.__tab_stats, setEls.__tab_backup, setEls.__tab_security];
-    if (sel === '.settings-section') return [setEls.__sec_basic, setEls.__sec_stats, setEls.__sec_backup, setEls.__sec_security];
+    if (sel === '.set-tab') return [setEls.__tab_basic, setEls.__tab_appearance, setEls.__tab_stats, setEls.__tab_backup, setEls.__tab_security];
+    if (sel === '.settings-section') return [setEls.__sec_basic, setEls.__sec_appearance, setEls.__sec_stats, setEls.__sec_backup, setEls.__sec_security];
     return savedQSA ? savedQSA(sel) : [];
   };
-  ['__tab_basic','__tab_stats','__tab_backup','__tab_security'].forEach((k, i) => {
+  ['__tab_basic','__tab_appearance','__tab_stats','__tab_backup','__tab_security'].forEach((k, i) => {
     setEls[k] = makeEl(k);
-    setEls[k].dataset = { tab: ['basic','stats','backup','security'][i] };
+    setEls[k].dataset = { tab: ['basic','appearance','stats','backup','security'][i] };
   });
-  ['__sec_basic','__sec_stats','__sec_backup','__sec_security'].forEach((k, i) => {
+  ['__sec_basic','__sec_appearance','__sec_stats','__sec_backup','__sec_security'].forEach((k, i) => {
     setEls[k] = makeEl(k);
-    setEls[k].dataset = { section: ['basic','stats','backup','security'][i] };
+    setEls[k].dataset = { section: ['basic','appearance','stats','backup','security'][i] };
   });
   document.getElementById = id => setEls[id] || elements[id] || (elements[id] = makeEl(id));
   const savedGet = globalThis.localStorage.getItem, savedSet = globalThis.localStorage.setItem;
@@ -1385,6 +1459,23 @@ assert(xlsxClicked, 'Excel：锚点 click 被触发');
     assert(backupTab.classList.contains('on'), '设置页：点击后 Tab 高亮切换');
     basicTab.onclick();
     assert(!basicSec.classList.contains('hidden') && backupSec.classList.contains('hidden'), '设置页：切回「汇率与行情」Tab 正常');
+    // 外观：主题下拉 → 立即生效（bindThemeSettings 的 onchange）
+    const themeSel = setEls['s-theme'];
+    themeSel.value = 'dark';
+    themeSel.onchange();
+    assert(EcoCal.state.settings.themeMode === 'dark', '设置页：主题下拉选 dark → settings.themeMode=dark');
+    assert(docElStub.getAttribute('data-theme') === 'dark', '设置页：选 dark → documentElement 带 data-theme="dark"');
+    themeSel.value = 'light';
+    themeSel.onchange();
+    assert(EcoCal.state.settings.themeMode === 'light' && docElStub.getAttribute('data-theme') === null, '设置页：选 light → data-theme 移除');
+    themeSel.value = 'auto';
+    themeSel.onchange();
+    assert(EcoCal.state.settings.themeMode === 'auto', '设置页：选 auto → settings.themeMode=auto');
+    // 外观 Tab 切换
+    const appSec = setEls.__sec_appearance;
+    setEls.__tab_appearance.onclick();
+    assert(!appSec.classList.contains('hidden'), '设置页：点击「外观」Tab → 外观分区显示');
+    basicTab.onclick();
     // 备份提醒开关：勾选 → 写入 settings 并保存
     const remEnabled = setEls['rem-enabled'];
     remEnabled.checked = true;
@@ -1412,7 +1503,15 @@ assert(xlsxClicked, 'Excel：锚点 click 被触发');
     document.querySelectorAll = savedQSA;
     globalThis.localStorage.getItem = savedGet;
     globalThis.localStorage.setItem = savedSet;
-    EcoCal.state = JSON.parse(savedState);
+    // 恢复现场：仅还原内容，不整体替换 state 对象（避免切断闭包 state 引用，影响后续测试段）
+    const restored = JSON.parse(savedState);
+    EcoCal.state.assets.length = 0;
+    (restored.assets || []).forEach(a => EcoCal.state.assets.push(a));
+    EcoCal.state.trades.length = 0;
+    (restored.trades || []).forEach(t => EcoCal.state.trades.push(t));
+    EcoCal.state.valuations.length = 0;
+    (restored.valuations || []).forEach(v => EcoCal.state.valuations.push(v));
+    EcoCal.state.settings = restored.settings;
   }
 }
 
@@ -1428,6 +1527,121 @@ assert(xlsxClicked, 'Excel：锚点 click 被触发');
   assert(cut1m === '2026-05-16', '区间「近1月」→ 30 天前');
   const cut3m = EcoCal.trendRangeCutoff('3m', '2026-06-15');
   assert(cut3m === '2026-03-17', '区间「近3月」→ 90 天前');
+}
+
+/* ---- 12.5 搜索资产 + 排序增强 ---- */
+{
+  // 注意：不要整体替换 EcoCal.state（会切断闭包里 state 的引用），
+  // 只 push/改字段，finally 里把 assets 弹出即可。
+  const savedAssets = EcoCal.state.assets;
+  const savedSimplified = JSON.stringify(EcoCal.state.assets);
+  // 造两个资产（名称/代码不同）用于搜索与排序
+  const mkSearchAsset = (id, name, symbol) => ({
+    id, name, category: 'fund', currency: 'CNY', subCategory: '',
+    symbol: symbol || '', note: '', riskLevel: 'R2', tPlusN: 1,
+    lastPrice: 1, priceSource: 'manual', createdAt: '2026-01-01',
+  });
+  EcoCal.state.assets.push(
+    mkSearchAsset('ast_search_aa', '易方达蓝筹精选', '110011'),
+    mkSearchAsset('ast_search_bb', '余杭现金宝', ''),
+  );
+  const savedFilters = EcoCal.filters;
+  try {
+    // 1) 排序选项包含新项
+    const sortLabels = EcoCal.SORT_OPTIONS.map(o => o[1]);
+    assert(sortLabels.includes('市值从低到高'), '排序增强：含「市值从低到高」');
+    assert(sortLabels.includes('已实现盈亏从高到低'), '排序增强：含「已实现盈亏从高到低」');
+    assert(sortLabels.includes('总盈亏从高到低'), '排序增强：含「总盈亏从高到低」');
+    // 2) 搜索按名称匹配（直接改闭包 filters 的字段，不能整体替换对象）
+    EcoCal.filters.query = '蓝筹';
+    const byName = EcoCal.filteredAssets();
+    assert(byName.length === 1 && byName[0].id === 'ast_search_aa', '搜索：按名称「蓝筹」→ 只命中易方达蓝筹精选（实际 ' + byName.length + ' 条）');
+    // 3) 搜索按代码匹配
+    EcoCal.filters.query = '110011';
+    const bySymbol = EcoCal.filteredAssets();
+    assert(bySymbol.length === 1 && bySymbol[0].id === 'ast_search_aa', '搜索：按代码「110011」命中');
+    // 4) 搜索无匹配
+    EcoCal.filters.query = '不存在的名字';
+    assert(EcoCal.filteredAssets().length === 0, '搜索：无匹配返回空');
+    // 5) 空搜索返回全部（原有资产 + 两个新资产都在）
+    EcoCal.filters.query = '';
+    const all = EcoCal.filteredAssets();
+    assert(all.length === EcoCal.state.assets.length, '搜索：空词返回全部资产');
+    // 6) 排序：市值从低到高可执行（无交易资产在前，顺序稳定不抛）
+    EcoCal.filters.sort = 'valueAsc';
+    const sortedAsc = EcoCal.filteredAssets();
+    assert(sortedAsc[0].id === 'ast_search_aa' || sortedAsc[0].id === 'ast_search_bb' || sortedAsc[0].id === undefined,
+      '排序：市值从低到高可执行');
+  } finally {
+    // 恢复现场：只移除测试附加的两个资产，把数组引用原样保留（避免替换引用导致后续闭包 state 不一致）
+    if (savedAssets.length > 0) { // array exists
+      const removeIds = new Set(['ast_search_aa', 'ast_search_bb']);
+      for (let i = savedAssets.length - 1; i >= 0; i--) {
+        if (removeIds.has(savedAssets[i] && savedAssets[i].id)) savedAssets.splice(i, 1);
+      }
+    }
+    EcoCal.filters = savedFilters;
+  }
+}
+
+/* ---- 12.6 数据合并导入 ---- */
+{
+  const savedAssets = EcoCal.state.assets;
+  const savedTrades = EcoCal.state.trades;
+  // 备份当前数组内容（用于最终恢复）
+  const backupAssets = savedAssets.slice();
+  const backupTrades = savedTrades.slice();
+  const savedSimplifiedSettings = JSON.stringify(EcoCal.state.settings);
+  const hadLocal = savedAssets.length > 0;
+  try {
+    // 若本地原本无资产，先造一个「本地已有资产」，验证同 id 资产不被重复并入
+    if (!hadLocal) {
+      savedAssets.push({ id: 'ast_merge_shared', name: '共享资产', category: 'fund', currency: 'CNY', lastPrice: 1 });
+    }
+    const localAsset = savedAssets[0];
+    const baseAsset = localAsset
+      ? { id: localAsset.id, name: localAsset.name, category: localAsset.category || 'fund', currency: 'CNY' }
+      : { id: 'ast_merge_shared', name: '共享资产', category: 'fund', currency: 'CNY' };
+    const payload = {
+      app: 'EcoCal', version: 1, exportedAt: new Date().toISOString(),
+      assets: [
+        baseAsset, // 与本地同 id
+        { id: 'ast_merge_new', name: '新合并资产', category: 'deposit', currency: 'CNY', lastPrice: 1 },
+      ],
+      valuations: [],
+      trades: [
+        // 交易 A：属于共享资产（应并入）
+        { id: 'tr_merge_a', assetId: baseAsset.id, type: 'buy', date: '2026-05-01', quantity: 100, price: 10, fee: 1, note: '合并测试A' },
+        // 交易 B：属于新资产（随新资产并入）
+        { id: 'tr_merge_b', assetId: 'ast_merge_new', type: 'buy', date: '2026-05-02', quantity: 50, price: 20, fee: 0, note: '合并测试B' },
+      ],
+      settings: { baseCurrency: 'USD', rates: { CNY: 0.15 } }, // 覆盖导入才用；合并不应生效
+    };
+    const beforeAssets = savedAssets.length;
+    const beforeTrades = savedTrades.length;
+    const r = EcoCal.mergePayloadText(JSON.stringify(payload));
+    assert(r && r.newAssets === 1, '合并导入：新增 1 个新资产');
+    assert(r && r.newTrades === 2, '合并导入：新增 2 笔交易');
+    assert(r.mergedAssets.length === beforeAssets + 1, '合并导入：资产总数 +1');
+    assert(r.mergedTrades.length === beforeTrades + 2, '合并导入：交易总数 +2');
+    // 交易 assetId 重映射：新资产交易指向新 id
+    const newTradeB = r.mergedTrades.find(t => t.note === '合并测试B');
+    assert(newTradeB && newTradeB.assetId === 'ast_merge_new', '合并导入：新资产交易 assetId 保持');
+    // applyMerge 落地后再合并同一份内容 → 0 新增（去重基于已落盘 state）
+    EcoCal.applyMerge(r);
+    const r2 = EcoCal.mergePayloadText(JSON.stringify(payload));
+    assert(r2 && r2.newAssets === 0 && r2.newTrades === 0, '合并导入：重复内容不再新增');
+    assert(EcoCal.state.assets.length === beforeAssets + 1, '合并导入：applyMerge 后资产落盘');
+    assert(EcoCal.state.trades.length === beforeTrades + 2, '合并导入：applyMerge 后交易落盘');
+    assert(EcoCal.state.settings.baseCurrency === 'CNY', '合并导入：设置不覆盖（保留本地 CNY）');
+  } finally {
+    // 恢复现场：数组引用不动，只还原内容（避免切断闭包 state 引用）
+    EcoCal.state.assets.length = 0;
+    backupAssets.forEach(a => EcoCal.state.assets.push(a));
+    EcoCal.state.trades.length = 0;
+    backupTrades.forEach(t => EcoCal.state.trades.push(t));
+    EcoCal.state.settings = JSON.parse(savedSimplifiedSettings);
+  }
 }
 
 /* ---- 汇总结果 ---- */
