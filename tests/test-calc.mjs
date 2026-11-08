@@ -1644,6 +1644,79 @@ assert(xlsxClicked, 'Excel：锚点 click 被触发');
   }
 }
 
+/* ---- 13. UI/布局（v6.6 规划）：产品页资产速览条 + 统计页章节锚点 ---- */
+{
+  const savedAssets = EcoCal.state.assets;
+  const savedTrades = EcoCal.state.trades;
+  const savedFilters = { ...EcoCal.filters };
+  const backupAssets = savedAssets.slice();
+  const backupTrades = savedTrades.slice();
+  try {
+    assert(typeof EcoCal.renderAssetSummary === 'function' && typeof EcoCal.updateStatsNavSpy === 'function',
+      'UI/布局：renderAssetSummary / updateStatsNavSpy 已导出');
+
+    // 1) 无资产时速览条隐藏且清空
+    EcoCal.state.assets.length = 0;
+    EcoCal.state.trades.length = 0;
+    EcoCal.renderAssetSummary();
+    const sumEl = elements['asset-summary'];
+    assert(sumEl.classList.contains('hidden'), '速览条：无资产时隐藏');
+    assert(sumEl.innerHTML === '', '速览条：无资产时内容为空');
+
+    // 2) 有资产时渲染 4 项（总市值/累计投入/总盈亏/总收益率），数值非空、标签含基准币种
+    const mkAsset = (id, name, category, symbol, lastPrice) => ({
+      id, name, category, currency: 'CNY', symbol: symbol || '', note: '', riskLevel: 'R3', tPlusN: 1, lastPrice,
+    });
+    savedAssets.push(
+      mkAsset('ast_sum_a', '速览股票A', 'stock', '600000', 12),
+      mkAsset('ast_sum_b', '速览基金B', 'fund', '', 2.5),
+    );
+    savedTrades.push(
+      { id: 'tr_sum_a', assetId: 'ast_sum_a', type: 'buy', date: '2026-10-01', quantity: 100, price: 10, fee: 0, mode: 'qty', note: '' },
+      { id: 'tr_sum_b', assetId: 'ast_sum_b', type: 'buy', date: '2026-10-02', quantity: 400, price: 2, fee: 0, mode: 'qty', note: '' },
+    );
+    EcoCal.renderAll(); // 刷新统计页（含盈亏构成圆环）
+    const html = sumEl.innerHTML;
+    assert(!sumEl.classList.contains('hidden'), '速览条：有资产时显示');
+    const cellCount = (html.match(/class="as-sum"/g) || []).length;
+    assert(cellCount === 4, '速览条：渲染 4 个指标卡（实际 ' + cellCount + '）');
+    assert(html.indexOf('总市值（CNY）') > -1, '速览条：含「总市值（CNY）」标签');
+    assert(html.indexOf('¥2,200.00') > -1 && html.indexOf('¥1,800.00') > -1,
+      '速览条：总市值/累计投入数值已计算（市值 100×12 + 400×2.5 = ¥2,200，成本 1,000 + 800 = ¥1,800）→ actual=' +
+      ((html.match(/总市值（CNY）<\/div><div class="as-value[^"]*">([^<]+)</) || [])[1] || '?'));
+    assert(html.indexOf('累计投入') > -1 && html.indexOf('总盈亏') > -1 && html.indexOf('总收益率') > -1,
+      '速览条：累计投入/总盈亏/总收益率 标签齐全');
+
+    // 单段整圆（只有浮动盈亏、无已实现）→ 圆环拆成两段半圆弧（同一 path 内连续 A 子命令），
+    // 避免「起点=终点」的 360° 弧在 Chrome/Edge 中不渲染导致圆环消失
+    const profitHtml13 = elements['profit-chart'].innerHTML || '';
+    const pathCount13 = (profitHtml13.match(/<path/g) || []).length;
+    assert(pathCount13 === 2, '盈亏构成：仅一种盈亏（100% 整圆）时每个环拆成两段半圆弧（实际 ' + pathCount13 + ' 个 path）');
+    assert(/A73\.5 73\.5 0 0 1 [0-9.]+ [0-9.]+A73\.5/.test(profitHtml13), '盈亏构成：拆段为连续 A 子命令（两段 180° 弧）');
+
+    // 3) 筛选联动：按类别筛出 1 项 → 子注显示「筛选后 1 项」
+    EcoCal.filters.category = 'fund';
+    EcoCal.renderList();
+    assert(sumEl.innerHTML.indexOf('筛选后 1 项') > -1, '速览条：筛选生效时标注「筛选后 1 项」');
+    EcoCal.filters.category = 'all';
+    EcoCal.renderList();
+    assert(sumEl.innerHTML.indexOf('全部持仓折合 CNY') > -1, '速览条：无筛选时标注「全部持仓折合 CNY」');
+
+    // 4) 统计页章节 anchor：switchTab 触发 scroll-spy 不抛异常（桩环境无 DOM 直接静默返回）
+    EcoCal.switchTab('stats');
+    EcoCal.switchTab('assets');
+    EcoCal.updateStatsNavSpy();
+    assert(true, 'UI/布局：章节锚点 scroll-spy 在无真实 DOM 环境静默跳过（不抛异常）');
+  } finally {
+    // 恢复现场：数组引用不动，只还原内容与筛选
+    EcoCal.state.assets.length = 0;
+    backupAssets.forEach(a => EcoCal.state.assets.push(a));
+    EcoCal.state.trades.length = 0;
+    backupTrades.forEach(t => EcoCal.state.trades.push(t));
+    Object.assign(EcoCal.filters, savedFilters);
+  }
+}
+
 /* ---- 汇总结果 ---- */
 console.log('\n结果：' + pass + ' 通过，' + fail + ' 失败');
 if (fail > 0) process.exit(1);

@@ -17,3 +17,6 @@ $RECYCLE.BIN/
 
 # 依赖（本项目零第三方依赖，预留）
 node_modules/
+
+# e2e 浏览器临时 profile（tools/e2e-*.mjs 运行时生成）
+.e2e-*-profile/

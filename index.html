@@ -17,10 +17,14 @@
   <div class="topbar-inner">
     <div class="brand">EcoCal <span class="brand-sub">资产持仓记录</span><span class="version-tag" id="app-version"></span></div>
     <div class="top-actions">
-      <button id="btn-help" class="btn btn-ghost">帮助</button>
-      <button id="btn-import" class="btn btn-ghost">导入</button>
-      <button id="btn-export" class="btn btn-ghost">导出</button>
-      <button id="btn-settings" class="btn btn-ghost">设置</button>
+      <!-- 次要操作（帮助/导入/导出/设置）：桌面端平铺；窄屏收起在「⋯」溢出菜单中，避免顶栏换行过高 -->
+      <nav class="top-nav" id="top-nav" aria-label="更多操作">
+        <button id="btn-help" class="btn btn-ghost">帮助</button>
+        <button id="btn-import" class="btn btn-ghost">导入</button>
+        <button id="btn-export" class="btn btn-ghost">导出</button>
+        <button id="btn-settings" class="btn btn-ghost">设置</button>
+      </nav>
+      <button id="btn-more" class="btn btn-ghost btn-more" aria-label="更多操作" aria-expanded="false">⋯</button>
       <button id="btn-add" class="btn btn-primary">＋ 添加产品</button>
     </div>
   </div>
@@ -35,39 +39,20 @@
 
   <!-- 统计面板（独立于产品列表）：仪表盘 + 配置结构 + 集中度 + 明细 + 走势/构成 -->
   <section class="tab-panel hidden" id="panel-stats" role="tabpanel">
+    <!-- 章节锚点导航（吸顶在 Tab 栏下方，滚动时高亮当前章节；窄屏横向滑动不换行） -->
+    <nav class="stats-nav" id="stats-nav" aria-label="统计页章节导航">
+      <a href="#dash-cards" class="stats-nav-item on" data-spy="dash-cards">核心仪表盘</a>
+      <a href="#sec-trend" class="stats-nav-item" data-spy="sec-trend">组合走势</a>
+      <a href="#sec-struct" class="stats-nav-item" data-spy="sec-struct">配置与结构</a>
+      <a href="#sec-conc" class="stats-nav-item" data-spy="sec-conc">集中度</a>
+      <a href="#sec-detail" class="stats-nav-item" data-spy="sec-detail">持仓明细</a>
+    </nav>
+
     <h3 class="stats-sec">核心仪表盘</h3>
     <section class="dash-cards" id="dash-cards"></section>
 
-    <h3 class="stats-sec">配置与结构</h3>
-    <section class="struct-grid">
-      <div class="card chart-card">
-        <div class="chart-head"><h2>资产类别配置</h2><span class="chart-desc">股票/债券/基金ETF/商品/数字货币/现金及等价物/其他</span></div>
-        <div id="dist-groups"></div>
-      </div>
-      <div class="card chart-card">
-        <div class="chart-head"><h2>市场配置</h2><span class="chart-desc">A股 / 港股 / 美股 / 其他</span></div>
-        <div id="dist-markets"></div>
-      </div>
-      <div class="card chart-card struct-wide">
-        <div class="chart-head"><h2>币种敞口</h2><span class="chart-desc">CNY / USD / HKD / 其他 · 未对冲</span></div>
-        <div id="dist-currencies"></div>
-      </div>
-    </section>
-
-    <h3 class="stats-sec">集中度</h3>
-    <section class="card chart-card">
-      <div class="chart-head"><h2>集中度</h2><span class="chart-desc">单一标的上限可在设置中调整</span></div>
-      <div id="concentration"></div>
-    </section>
-
-    <h3 class="stats-sec">持仓明细</h3>
-    <section class="card chart-card">
-      <div class="chart-head"><h2>持仓明细</h2><span class="chart-desc">按市值降序</span></div>
-      <div id="detail-table"></div>
-    </section>
-
-    <h3 class="stats-sec">走势与构成（附加视图）</h3>
-    <section class="charts-grid">
+    <h3 class="stats-sec">走势与构成</h3>
+    <section class="charts-grid" id="sec-trend">
       <div class="card chart-card">
         <div class="chart-head"><h2>组合走势</h2><span class="chart-desc" id="trend-desc">估值市值与累计净投入对比</span></div>
         <div class="dim-toggle" id="trend-modes">
@@ -97,10 +82,41 @@
         <div class="chart-box" id="profit-chart"></div>
       </div>
     </section>
+
+    <h3 class="stats-sec">配置与结构</h3>
+    <section class="struct-grid" id="sec-struct">
+      <div class="card chart-card">
+        <div class="chart-head"><h2>资产类别配置</h2><span class="chart-desc">股票/债券/基金ETF/商品/数字货币/现金及等价物/其他</span></div>
+        <div id="dist-groups"></div>
+      </div>
+      <div class="card chart-card">
+        <div class="chart-head"><h2>市场配置</h2><span class="chart-desc">A股 / 港股 / 美股 / 其他</span></div>
+        <div id="dist-markets"></div>
+      </div>
+      <div class="card chart-card struct-wide">
+        <div class="chart-head"><h2>币种敞口</h2><span class="chart-desc">CNY / USD / HKD / 其他 · 未对冲</span></div>
+        <div id="dist-currencies"></div>
+      </div>
+    </section>
+
+    <h3 class="stats-sec">集中度</h3>
+    <section class="card chart-card" id="sec-conc">
+      <div class="chart-head"><h2>集中度</h2><span class="chart-desc">单一标的上限可在设置中调整</span></div>
+      <div id="concentration"></div>
+    </section>
+
+    <h3 class="stats-sec">持仓明细</h3>
+    <section class="card chart-card" id="sec-detail">
+      <div class="chart-head"><h2>持仓明细</h2><span class="chart-desc">按市值降序</span></div>
+      <div id="detail-table"></div>
+    </section>
   </section>
 
-  <!-- 产品面板：筛选 + 列表 -->
+  <!-- 产品面板：资产速览 + 筛选 + 列表 -->
   <section class="tab-panel" id="panel-assets" role="tabpanel">
+    <!-- 资产速览条（当前筛选口径的 4 项合计，随筛选/数据联动） -->
+    <section class="asset-summary" id="asset-summary"></section>
+
     <!-- 筛选栏 -->
     <section class="filter-bar">
       <input id="filter-search" type="search" placeholder="搜索名称 / 代码 / 备注…" title="按名称、代码、备注搜索">

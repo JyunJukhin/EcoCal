@@ -3,7 +3,7 @@
  * 用途：
  *   1) 本地验证 Service Worker / PWA 离线能力（SW 只能在 http 下注册）；
  *   2) 手机同 WiFi 下试用：启动后手机访问 http://<电脑IP>:<端口>。
- * 用法：node tools/serve.mjs [目录] [端口]     （默认目录=项目根，端口=8123）
+ * 用法：node tools/serve.mjs [目录] [端口] [监听地址]   （默认目录=项目根，端口=8123，监听 0.0.0.0）
  * ========================================================================= */
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -11,6 +11,8 @@ import { extname, join, normalize, resolve } from 'node:path';
 
 const root = resolve(process.argv[2] || '.');
 const port = Number(process.argv[3] || 8123);
+const host = process.argv[4] || '0.0.0.0'; // 局域网共享用 0.0.0.0；仅本机调试可改 127.0.0.1
+import { networkInterfaces } from 'node:os';
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -46,8 +48,9 @@ createServer(async (req, res) => {
     res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end('Not Found: ' + e.code);
   }
-}).listen(port, '0.0.0.0', () => {
-  console.log('EcoCal 静态服务器已启动:');
+}).listen(port, host, () => {
+  console.log('EcoCal 静态服务器已启动（%s:%d）:', host, port);
   console.log('  本机访问   http://localhost:' + port);
-  console.log('  手机访问   http://<本机IP>:' + port + '   （同一 WiFi，可用 ipconfig 查看本机IP）');
+  const ip = Object.values(networkInterfaces()).flat().find(i => i.family === 'IPv4' && !i.internal)?.address;
+  console.log('  手机访问   http://' + (ip || '<本机IP>') + ':' + port + '   （同一 WiFi，可用 ipconfig 查看本机IP）');
 });

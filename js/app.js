@@ -17,7 +17,7 @@ const STORAGE_KEY = 'ecocal.data.v1';
  * - 主版本：重大架构/功能（v3 多文件、v4 股票交易与行情、v6 交易记录全模式）
  * - 次版本：功能增强（v5 监察表模式与优化、v6.1 统计功能、v6.2 统计页重设计、v6.4 云备份）
  * - 补丁：缺陷修复 */
-const APP_VERSION = '6.5.0';
+const APP_VERSION = '6.6.0';
 
 const CURRENCIES = {
   CNY: { symbol: '¥',  name: '人民币' },
@@ -893,12 +893,27 @@ const Charts = {
     const S = size || 180, cx = S / 2, cy = S / 2, r = S / 2 - 14, sw = 26;
     const total = data.reduce((s, d) => s + (d.value > 0 ? d.value : 0), 0);
     if (total <= 0) return '<div class="chart-empty">暂无数据</div>';
-    const arc = (a0, a1) => {
+    // 单段圆弧路径（large-arc 按是否超过 180° 判定）
+    const arcSeg = (a0, a1) => {
       const x0 = cx + r * Math.cos(a0), y0 = cy + r * Math.sin(a0);
       const x1 = cx + r * Math.cos(a1), y1 = cy + r * Math.sin(a1);
       const large = (a1 - a0) > Math.PI ? 1 : 0;
       return 'M' + x0.toFixed(2) + ' ' + y0.toFixed(2) +
              'A' + r + ' ' + r + ' 0 ' + large + ' 1 ' + x1.toFixed(2) + ' ' + y1.toFixed(2);
+    };
+    // 整圆修复：当一段占比 100%（≈360°）时，起点=终点，部分渲染器（Chrome/Edge）不绘制此类弧，
+    // 导致「只有一种盈亏时圆环整个消失」。这里拆成两段 180° 半圆（连续 A 子命令，无缝拼接）。
+    const arc = (a0, a1) => {
+      if (a1 - a0 >= Math.PI * 2 - 1e-9) {
+        const mid = a0 + Math.PI;
+        const x0 = cx + r * Math.cos(a0), y0 = cy + r * Math.sin(a0);
+        const xm = cx + r * Math.cos(mid), ym = cy + r * Math.sin(mid);
+        const x1 = cx + r * Math.cos(a1), y1 = cy + r * Math.sin(a1);
+        return 'M' + x0.toFixed(2) + ' ' + y0.toFixed(2) +
+          'A' + r + ' ' + r + ' 0 0 1 ' + xm.toFixed(2) + ' ' + ym.toFixed(2) +
+          'A' + r + ' ' + r + ' 0 0 1 ' + x1.toFixed(2) + ' ' + y1.toFixed(2);
+      }
+      return arcSeg(a0, a1);
     };
     let acc = -Math.PI / 2;
     let paths = '';
@@ -907,18 +922,19 @@ const Charts = {
       if (!(d.value > 0)) return;
       const angle = d.value / total * Math.PI * 2;
       const a1 = acc + angle;
+      // 颜色支持 CSS 变量（var(--accent) 等），故用内联 style 而非 stroke 属性（属性不解析 var()）
       // data-dim-key 供「点击环图切片筛选」使用
-      paths += '<path d="' + arc(acc, a1) + '" fill="none" stroke="' + d.color +
-               '" stroke-width="' + sw + '" stroke-linecap="butt" data-dim-key="' + esc(d.key || d.label) + '"' +
-               ' title="' + esc(d.label) + '" style="cursor:pointer"/>';
+      paths += '<path d="' + arc(acc, a1) + '" fill="none" data-dim-key="' + esc(d.key || d.label) + '"' +
+               ' title="' + esc(d.label) + '" style="stroke:' + d.color + ';stroke-width:' + sw +
+               ';stroke-linecap:butt;cursor:pointer"/>';
       legend.push('<span><i style="background:' + d.color + '"></i>' + esc(d.label) +
                   ' · ' + (Math.round(d.value / total * 1000) / 10) + '%</span>');
       acc = a1;
     });
-    // 圆心文字（如总市值）
+    // 圆心文字（如总市值）：颜色走主题变量，深色模式下不失效
     const centerText = (centerLines && Array.isArray(centerLines) && centerLines[1] != null)
-      ? '<text x="' + cx + '" y="' + (cy - 1) + '" text-anchor="middle" font-size="16" font-weight="650" fill="#1d1d1f" font-feature-settings="tnum">' + esc(String(centerLines[1])) + '</text>' +
-        '<text x="' + cx + '" y="' + (cy + 17) + '" text-anchor="middle" font-size="9.5" fill="#86868b">' + esc(String(centerLines[0] || '')) + '</text>'
+      ? '<text x="' + cx + '" y="' + (cy - 1) + '" text-anchor="middle" font-size="16" font-weight="650" font-feature-settings="tnum" style="fill:var(--ink)">' + esc(String(centerLines[1])) + '</text>' +
+        '<text x="' + cx + '" y="' + (cy + 17) + '" text-anchor="middle" font-size="9.5" style="fill:var(--ink-2)">' + esc(String(centerLines[0] || '')) + '</text>'
       : '';
     return '<div style="display:flex;flex-direction:column;align-items:center">' +
            '<svg viewBox="0 0 ' + S + ' ' + S + '" style="max-width:' + S + 'px">' + paths + centerText + '</svg>' +
@@ -1076,6 +1092,31 @@ function switchTab(name) {
   const statsPanel = $id('panel-stats');
   if (assetsPanel) assetsPanel.classList.toggle('hidden', activeTab !== 'assets');
   if (statsPanel) statsPanel.classList.toggle('hidden', activeTab !== 'stats');
+  if (activeTab === 'stats') updateStatsNavSpy(); // 切到统计页时立即定位当前可见章节
+  // 切换页签后回到页面顶部（避免上一页签的滚动位置落在另一页签中间）
+  if (typeof window !== 'undefined' && typeof window.scrollTo === 'function') window.scrollTo(0, 0);
+}
+
+/* ---- 统计页章节锚点导航：以「视口中线」判定当前章节（scroll-spy；无真实 DOM 环境静默跳过） ---- */
+function updateStatsNavSpy() {
+  if (activeTab !== 'stats') return;
+  if (typeof document.querySelectorAll !== 'function') return;
+  const items = document.querySelectorAll('#stats-nav .stats-nav-item');
+  if (!items.length) return;
+  // 判定线 = 视口中线：高亮「中线所在」的章节（顶部越过中线的最后一个章节 = 中线落入的章节），
+  // 而不是页面最顶端是什么就高亮什么（吸顶导航悬在顶部，用中线判定更符合阅读位置）
+  const line = (typeof window !== 'undefined' && window.innerHeight) ? window.innerHeight / 2 : 120;
+  let currentId = null;
+  items.forEach(a => {
+    const id = a.dataset ? (a.dataset.spy || '') : '';
+    if (!id) return;
+    const sec = document.getElementById(id);
+    if (sec && typeof sec.getBoundingClientRect === 'function' && sec.getBoundingClientRect().top <= line) {
+      currentId = id;
+    }
+  });
+  if (!currentId && items.length) currentId = items[0].dataset.spy; // 页面顶部未越过任何章节 → 高亮第一个
+  items.forEach(a => a.classList.toggle('on', a.dataset.spy === currentId));
 }
 
 function getAsset(id) { return state.assets.find(a => a.id === id); }
@@ -1234,6 +1275,16 @@ function profitChartHTML(s) {
     if (total > 0.004) { gainSum += total; gainCount++; }
     else if (total < -0.004) { lossSum += total; lossCount++; }
   });
+  // 有持仓但浮动/已实现全部为 0（如纯存款/货币基金，或刚按现价买入）：圆环无数据可画，
+  // 给出明确占位文案，避免用户看到空空如也的卡片
+  const anyPnL = s.metrics.some(m => {
+    const t = m.baseTotal != null ? m.baseTotal : m.baseProfit;
+    return t != null && Math.abs(t) > 0.004;
+  });
+  if (!anyPnL) {
+    return '<div class="chart-empty" style="padding:36px 0">暂无盈亏构成' +
+      '<div class="hint" style="margin-top:6px;font-size:12px;color:var(--ink-3)">当前持仓浮动与已实现盈亏均为 0（如存款/货币基金或刚按现价买入），暂无可构成的盈亏环。</div></div>';
+  }
   // 迷你环图：环面积按绝对值占比。
   // 配色：浮动盈亏=蓝、已实现盈亏=橙（两者同正/负时仍可一眼区分）；盈利=红、亏损=绿
   const donutOf = (items, centerLines) => Charts.ring(
@@ -1241,7 +1292,8 @@ function profitChartHTML(s) {
       key: it.label,
       label: it.label + ' ' + fmtSignedMoney(it.value, base),
       value: Math.abs(it.value),
-      color: it.color || (it.value > 0 ? '#d70015' : '#1d9e49'),
+      // 颜色走主题变量（深色模式自动提亮，避免暗色下看不清）：盈利=红、亏损=绿
+      color: it.color || (it.value > 0 ? 'var(--red)' : 'var(--green)'),
     })),
     175,
     centerLines
@@ -1249,8 +1301,8 @@ function profitChartHTML(s) {
   return '<div class="profit-donuts">' +
     '<div class="donut"><div class="donut-title">浮动 vs 已实现</div>' +
       donutOf([
-        { label: '浮动盈亏', value: s.totalFloat, color: '#0071e3' },
-        { label: '已实现盈亏', value: s.totalRealized, color: '#ff9f0a' },
+        { label: '浮动盈亏', value: s.totalFloat, color: 'var(--accent)' },
+        { label: '已实现盈亏', value: s.totalRealized, color: 'var(--orange)' },
       ], ['总盈亏', fmtSignedMoney(s.totalProfit, base)]) + '</div>' +
     '<div class="donut"><div class="donut-title">盈利 vs 亏损产品</div>' +
       donutOf([
@@ -1689,6 +1741,40 @@ function quoteChartHTML(asset) {
     (asset.lastPrice != null ? '<br>当前手动现价：' + fmtQty(asset.lastPrice) : '') + '</div>';
 }
 
+/* ---- 产品页资产速览条（v6.6 规划：总市值/累计投入/总盈亏/总收益率 4 项，随筛选与数据联动） ---- */
+function renderAssetSummary() {
+  const el = $id('asset-summary');
+  if (!el) return;
+  const empty = state.assets.length === 0;
+  el.classList.toggle('hidden', empty); // 无持仓时隐藏，由空状态引导
+  if (empty) { el.innerHTML = ''; return; }
+  // 口径与统计页一致（Calc.statistics），但只统计「当前筛选条件下」的结果集
+  const list = filteredAssets();
+  const st = Calc.statistics(list, state.trades, state.settings, {
+    liabilities: state.settings.liabilities || 0,
+    singleAssetCap: state.settings.singleAssetCap != null ? state.settings.singleAssetCap : 20,
+  });
+  const base = st.base;
+  const cls = v => (v > 0.004 ? 'money-red' : v < -0.004 ? 'money-green' : '');
+  const filterActive = filters.category !== 'all' || filters.currency !== 'all' ||
+    ((filters.query || '').trim() !== '') || !!filters.assetId || !!filters.risk || !!filters.fxFlag;
+  const totalRate = st.totalCost > 0 ? st.totalProfit / st.totalCost : null;
+  const cells = [
+    { l: '总市值（' + base + '）', v: fmtMoney(st.totalValue, base), c: '',
+      sub: filterActive ? '筛选后 ' + list.length + ' 项' : '全部持仓折合 ' + base },
+    { l: '累计投入', v: fmtMoney(st.totalCost, base), c: '', sub: '当前持仓成本合计' },
+    { l: '总盈亏（浮+实）', v: fmtSignedMoney(st.totalProfit, base), c: cls(st.totalProfit),
+      sub: '浮动 ' + fmtSignedMoney(st.totalFloat, base) + ' · 已实现 ' + fmtSignedMoney(st.totalRealized, base) },
+    { l: '总收益率', v: totalRate == null ? '--' : fmtPct(totalRate * 100), c: cls(st.totalProfit),
+      sub: '总盈亏 ÷ 累计投入' },
+  ];
+  el.innerHTML = cells.map(c =>
+    '<div class="as-sum"><div class="as-label">' + c.l + '</div>' +
+    '<div class="as-value ' + (c.c || '') + '">' + c.v + '</div>' +
+    '<div class="as-sub">' + c.sub + '</div></div>'
+  ).join('');
+}
+
 function renderList() {
   const list = filteredAssets();
   const emptyOverall = state.assets.length === 0;
@@ -1699,6 +1785,7 @@ function renderList() {
   if (filterEmpty) {
     $id('asset-list').innerHTML = '<div class="card" style="text-align:center;color:var(--ink-3);padding:40px">当前筛选条件下暂无产品</div>';
   }
+  renderAssetSummary(); // 资产速览条与列表/筛选联动刷新
 }
 
 function renderFilters() {
@@ -4344,6 +4431,35 @@ function bindEvents() {
   $id('btn-add').onclick = () => openAssetForm(null);
   $id('empty-add').onclick = () => openAssetForm(null);
 
+  // 移动端顶栏溢出菜单：⋯ 开合 + 点击外部 / Esc 关闭（桌面端按钮平铺，菜单不可见）
+  const moreBtn = $id('btn-more');
+  const topNavEl = $id('top-nav');
+  if (moreBtn && topNavEl && typeof document.addEventListener === 'function') {
+    const closeMoreMenu = () => { topNavEl.classList.remove('open'); moreBtn.setAttribute('aria-expanded', 'false'); };
+    moreBtn.onclick = () => {
+      const open = topNavEl.classList.toggle('open');
+      moreBtn.setAttribute('aria-expanded', String(open));
+    };
+    // 点击菜单内操作或页面其它位置均关闭（「⋯」按钮自身除外，由 onclick 切换）
+    document.addEventListener('click', (e) => {
+      if (!e.target || typeof e.target.closest !== 'function') return;
+      if (e.target.closest('#btn-more')) return;
+      closeMoreMenu();
+    });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMoreMenu(); });
+  }
+
+  // 统计页章节锚点导航：滚动时高亮当前章节（rAF 节流，被动监听）
+  if (typeof window !== 'undefined' && typeof window.addEventListener === 'function' &&
+      typeof requestAnimationFrame === 'function') {
+    let spyPending = false;
+    window.addEventListener('scroll', () => {
+      if (spyPending) return;
+      spyPending = true;
+      requestAnimationFrame(() => { spyPending = false; updateStatsNavSpy(); });
+    }, { passive: true });
+  }
+
   // 主界面分页：产品 / 统计
   document.querySelectorAll('#main-tabs .tab').forEach(btn => {
     btn.onclick = () => switchTab(btn.dataset.tab);
@@ -4664,6 +4780,8 @@ window.__EcoCal = {
   buildXlsxExcel, downloadXlsx,
   // 搜索/排序（供测试/调试）
   filteredAssets, renderFilters, filters,
+  // 产品页资产速览 + 统计页章节锚点（供测试/调试）
+  renderAssetSummary, updateStatsNavSpy,
   // 分红/利息/场外现金流（供测试/调试）
   tradeTimelineHTML, assetCardHTML, Calc,
   // 深色模式（供测试/调试）
