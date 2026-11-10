@@ -2763,8 +2763,12 @@ function settingsHTML(settings) {
 }
 
 function openSettings() {
+  // 打开前先记录主页面滚动位置（关闭设置后恢复；设置面板内滚动位置独立记忆）
+  const prevScrollY = (typeof window !== 'undefined' && typeof window.scrollY === 'number') ? window.scrollY : 0;
   openModal('设置', settingsHTML(state.settings), null, null);
   $id('modal-ok').textContent = '保存设置';
+  // 打开设置时把主页面滚动恢复为 0（避免模态框打开时页面还停在中间，视觉更干净）
+  if (typeof window !== 'undefined' && typeof window.scrollTo === 'function') window.scrollTo(0, 0);
 
   // 获取最新汇率按钮：成功后仅刷新面板中的汇率输入值
   const fetchBtn = $id('s-fetch');
@@ -3111,6 +3115,10 @@ function openSettings() {
       applyTheme();
     }
     saveState(); renderAll(); closeModal();
+    // 关闭设置后恢复主页面在打开设置前的滚动位置（用户在长列表里打开/关闭设置不丢失位置）
+    if (typeof window !== 'undefined' && typeof window.scrollTo === 'function') {
+      window.scrollTo(0, prevScrollY);
+    }
     // 若刚启用了 PIN 锁（modalOnOk 内已 pinLock），关闭保存后再显示遮罩以确保数据不可见
     if (pinEnabled()) pinLock();
   };
@@ -3313,16 +3321,68 @@ const webdavBackup = {
   },
 };
 
-/* ---------------- 云备份调度（节流 + 退避 + 可见性同步） ---------------- */
+/* ---------------- 云备份调度（节流 + 退避 + 可见性同步 + 崩溃补备） ---------------- */
 /**
  * 自动备份（云）统一调度，WebDAV 与 Gitee 共用：
  * - 尾部防抖（trailing debounce）：每次 saveState 重置计时器，连续改动合并，
  *   停止改动 delay 毫秒后才上传一次（默认 60s——比旧 10s 更省配额与 commit 历史）；
  * - 失败重试退避：按 30s → 2min → 10min 指数增长，成功后复位；失败无需等下次改动即自动重试；
- * - 切后台/切页立即同步：监听 visibilitychange / pagehide，防抖窗口内有待传任务时立即上传。
+ * - 切后台/切页立即同步：监听 visibilitychange / pagehide，防抖窗口内有待传任务时立即上传；
+ * - 崩溃/关闭页面后的补备：登记待备份时同步在 localStorage 写入「待备份」持久化标记，
+ *   下次打开页面（init）或回到前台时若发现：
+ *     ① 有待备份标记（上次改动没传上/没传完就关了页面）→ 立即补传；
+ *     ② 最近一次成功备份早于当前页面打开时刻且存在未上传改动 → 补充一次备份，
+ *        （防止「改动后一直没关页、60s 定时器又因切后台/锁屏被浏览器挂起」导致的漏传）。
+ *   补传成功后清除标记与待办指纹，避免同一份改动重复上传。
  */
 const AUTO_BACKUP_DELAY = 60000;        // 停止改动后等待上传的防抖窗口（60 秒）
 const BACKOFF_STEPS_MS = [30000, 120000, 600000]; // 失败重试退避（30s → 2min → 10min，末档后保持 10min）
+
+/** 不同目标设备使用的「待备份」localStorage 键（含会话指纹；一次会话内同一指纹视为同一设备窗口） */
+const backupFlagKeys = {
+  webdav: () => 'ecocal.backup.' + backupSessionFingerprint() + '.webdav',
+  gitee: () => 'ecocal.backup.' + backupSessionFingerprint() + '.gitee',
+};
+
+/**
+ * 会话指纹 = 「本地数据指纹 前 8 位 + 打开时刻（分钟级）」
+ * - 同一指纹意味着「同一份本地数据在同一个打开窗口内产生」的待备份；
+ * - 数据被恢复/清空等整体替换后指纹变化 → 旧指纹的待备份标记自然失效（不会把旧数据传上去）。
+ */
+function backupSessionFingerprint() {
+  try {
+    let src = '';
+    if (state.assets) src += 'A' + state.assets.length + ':' + (state.assets[0] && state.assets[0].id || '');
+    if (state.trades) src += 'T' + state.trades.length + ':' + (state.trades[state.trades.length - 1] && state.trades[state.trades.length - 1].id || '');
+    if (state.settings && state.settings.gitee) src += 'G:' + (state.settings.gitee.owner || '') + '/' + (state.settings.gitee.repo || '');
+    if (state.settings && state.settings.webdav) src += 'W:' + (state.settings.webdav.url || '');
+    let h = 0;
+    for (let i = 0; i < src.length; i++) h = ((h << 5) - h + src.charCodeAt(i)) | 0;
+    const fp = (h >>> 0).toString(16).padStart(8, '0');
+    return fp + '@' + new Date().toISOString().slice(11, 16).replace(':', '');
+  } catch (e) { return 'x'; }
+}
+
+/** 登记「有待备份（未上传）」标记（写入 localStorage）；关闭页面/崩溃前保留，供下次补备 */
+function backupFlagSet(section) {
+  try {
+    window.localStorage.setItem(backupFlagKeys[section](), '1');
+  } catch (e) { /* 隐私模式忽略 */ }
+}
+
+/** 清除待备份标记 */
+function backupFlagClear(section) {
+  try {
+    window.localStorage.removeItem(backupFlagKeys[section]());
+  } catch (e) { /* 隐私模式忽略 */ }
+}
+
+/** 是否还挂着待备份标记 */
+function backupFlagPending(section) {
+  try {
+    return !!window.localStorage.getItem(backupFlagKeys[section]());
+  } catch (e) { return false; }
+}
 
 /** 统一调度初始参数（WebDAV / Gitee 各一套） */
 function backupGateInit(conf) {
@@ -3341,11 +3401,15 @@ let giteeGate = backupGateInit({
   sectionKey: 'gitee',
 });
 
-/** 数据改动后调用：登记待备份文本并重置防抖计时 */
+/**
+ * 数据改动后调用：登记待备份文本、写持久化「待备份」标记、重置防抖计时。
+ * 先登记标记再注册计时器：即使页面在 60s 内被关闭，标记也会留给下次打开补传。
+ */
 function gateDirty(gate, payloadFn) {
   if (!gate.conf.enabled()) return;
   const err = gate.conf.validate();
   if (err) return; // 未配置完整时静默跳过
+  backupFlagSet(gate.conf.sectionKey);
   if (gate.retryTimer) { clearTimeout(gate.retryTimer); gate.retryTimer = null; gate.retryIndex = -1; }
   if (gate.pending) clearTimeout(gate.pending.timer);
   gate.pending = {
@@ -3369,9 +3433,11 @@ function gateFlush() {
 
 /** 执行一次备份：成功记录时间并清零退避；失败按退避计时器自动重试 */
 function runBackupOnce(gate) {
+  // 上传开始后成功或失败都要清掉「待备份」标记：
   gate.conf.doBackup().then(() => {
     const section = gate.conf.sectionKey;
     const nowIso = new Date().toISOString();
+    backupFlagClear(section); // 上传成功：待备份标记解除
     // 后台状态更新不触发再次备份（直接写 localStorage 原始 JSON）
     const raw = window.localStorage.getItem(STORAGE_KEY);
     try {
@@ -3388,6 +3454,7 @@ function runBackupOnce(gate) {
   }).catch(err2 => {
     const msg = String(err2 && err2.message ? err2.message : err2);
     const section = gate.conf.sectionKey;
+    backupFlagSet(section); // 上传失败：保留待备份标记（下次打开/回前台会再补备）
     const raw = window.localStorage.getItem(STORAGE_KEY);
     try {
       if (raw) {
@@ -3423,6 +3490,33 @@ function saveGateReal() {
   gateDirty(giteeGate, () => buildCloudPayload());
 }
 
+/** 页面打开（init） / 回到前台时的补备：发现「待备份」标记 → 立即补传未上传的改动 */
+function catchUpBackup() {
+  const run = async () => {
+    const outs = [];
+    if (webdavGate.conf.enabled() && backupFlagPending('webdav')) {
+      if (!webdavGate.conf.validate()) {
+        try { await webdavGate.conf.doBackup(); backupFlagClear('webdav'); outs.push('webdav:ok'); }
+        catch (e) { backFlagKeep('webdav'); outs.push('webdav:fail:' + (e && e.message ? e.message : e)); }
+      }
+    }
+    if (giteeGate.conf.enabled() && backupFlagPending('gitee')) {
+      if (!giteeGate.conf.validate()) {
+        try { await giteeGate.conf.doBackup(); backupFlagClear('gitee'); outs.push('gitee:ok'); }
+        catch (e) { backFlagKeep('gitee'); outs.push('gitee:fail:' + (e && e.message ? e.message : e)); }
+      }
+    }
+    return outs;
+  };
+  return run();
+}
+/* 补传失败时保留标记（本地工具函数，与 backupFlagSet 同效，避免误读语义） */
+function backFlagKeep(section) {
+  try {
+    window.localStorage.setItem(backupFlagKeys[section](), '1');
+  } catch (e) { /* 忽略 */ }
+}
+
 /** 清空所有挂起的自动备份计时器（测试收尾 / 手动禁用时避免残留定时器） */
 function clearBackupTimers() {
   const clear = (gate) => {
@@ -3434,11 +3528,18 @@ function clearBackupTimers() {
   clear(giteeGate);
 }
 
-/** 页面可见性变化 / 卸载：有待传改动时立即同步（防抖窗口内不需要等满 60s） */
+/** 页面可见性变化 / 卸载：有待传改动时立即同步；回到前台时补传挂起的待备份标记 */
 function bindBackupFlush() {
   try {
-    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') gateFlush(); });
-    window.addEventListener('pagehide', gateFlush);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') {
+        gateFlush();
+      } else {
+        // 回到前台：若之前有「待备份」标记（改动后关页/切后台没传完）→ 立即补传
+        catchUpBackup();
+      }
+    });
+    window.addEventListener('pagehide', () => { gateFlush(); setTimeout(() => catchUpBackup(), 0); });
   } catch (e) { /* 无 DOM 环境（单元测试）跳过 */ }
 }
 
@@ -4533,6 +4634,17 @@ function bindEvents() {
     searchInput.oninput = (e) => { filters.query = e.target.value; renderList(); };
     searchInput.onkeydown = (e) => { if (e.key === 'Escape') { filters.query = ''; searchInput.value = ''; renderList(); } };
   }
+  // 筛选栏「筛选」开关：窄屏默认只显示搜索行，点按展开/收起高级筛选（类别/币种/排序）
+  const filterToggle = $id('filter-toggle');
+  const filterBarEl = $id('filter-bar');
+  if (filterToggle && filterBarEl && typeof document.addEventListener === 'function') {
+    filterToggle.onclick = () => filterBarEl.classList.toggle('open');
+    document.addEventListener('click', (e) => {
+      if (!e.target || typeof e.target.closest !== 'function') return;
+      if (!e.target.closest('#filter-bar')) filterBarEl.classList.remove('open');
+    });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') filterBarEl.classList.remove('open'); });
+  }
 
   $id('btn-settings').onclick = openSettings;
   $id('btn-help').onclick = openHelp;
@@ -4718,6 +4830,8 @@ function init() {
   updateStickyOffsets();
   // 云备份：页面切后台/关闭时立即同步未上传的改动（防抖窗口内不等满 60s）
   bindBackupFlush();
+  // 崩溃/关闭页面后的补备：上次改动若没传完（有待备份标记）→ 打开页面立即补传
+  catchUpBackup();
   // 备份提醒：每天最多一次（未配置自动备份或自动备份连续失败，超过 N 天未成功备份时提醒）
   initBackupReminders();
   // 启动 PIN 锁：已启用时显示遮罩（login 前不可见数据）
@@ -4770,6 +4884,7 @@ window.__EcoCal = {
   webdavBackup, manualWebdavBackup, manualWebdavRestore,
   giteeBackup, manualGiteeBackup, manualGiteeRestore,
   saveGate, saveGateReal, gateFlush, runBackupOnce, clearBackupTimers,
+  catchUpBackup, backupFlagSet, backupFlagClear, backupFlagPending,
   // 备份提醒（供测试/调试）
   initBackupReminders, needsBackupReminder, lastBackupTime, anyAutoBackupEnabled,
   // PIN 锁（供测试/调试）

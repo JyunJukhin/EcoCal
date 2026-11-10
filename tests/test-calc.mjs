@@ -85,6 +85,9 @@ globalThis.prompt = () => null;
 globalThis.Blob = function () {};
 globalThis.FileReader = function () {};
 globalThis.URL = { createObjectURL: () => 'blob:x', revokeObjectURL: () => {} };
+// 初始化阶段（eval 即执行 init）会发起汇率/行情请求，测试环境注入失败即返回的 fetch 桩，避免真实联网挂起
+globalThis.fetch = async () => ({ ok: false, status: 0, headers: { get: () => null }, text: async () => '', json: async () => ({}) });
+
 // app.js 的 WebDAV Basic 认证用 btoa(unescape(encodeURIComponent(...)))，
 // 测试环境没有 btoa，这里给一个纯 JS 实现（严格 UTF-8 base64 编码）
 if (typeof globalThis.btoa !== 'function') {
@@ -1202,6 +1205,8 @@ assert(!giteeServer.files.has(gRemoteKey), 'Gitee：禁用自动备份后 saveSt
 EcoCal.state.settings.gitee.enabled = true;
 gb.setToken('');
 globalThis.fetch = origFetch2;
+// 清空自动备份计时器：避免 7.9 残留的 60s 防抖 timer 在后续段触发真实上传（测试环境 fetch 已还原）
+EcoCal.clearBackupTimers();
 
 // 7.11 精简载荷应用兼容：恢复（applyPayload）时缺 rates → 保留本地已有汇率
 const localRatesBefore = Object.assign({}, EcoCal.state.settings.rates);
@@ -1217,6 +1222,115 @@ EcoCal.state.settings.rates = localRatesBefore;
 
 // —— 测试收尾：清空挂起的自动备份计时器（避免残留 60s/退避定时器拖住进程）——
 EcoCal.clearBackupTimers();
+
+/* ---- 7.12 崩溃/关闭页面后的补备（待备份标记 → 下次打开补传） ---- */
+// 场景：用户在页面上改完数据，60s 防抖还没触发（或失败后退避中）就关闭了页面；
+// 重新打开页面后应补传上次未上传的改动（不再依赖内存中的计时器）。
+{
+  // 先设置完整配置：待备份指纹依赖 settings.gitee 的 owner/repo，
+  // 若在配置前登记标记（7.11 applyPayload 曾把 settings 替换为精简对象），
+  // 指纹会缺失 G 段，后续 catchUpBackup 查不到同一键 → 补传被跳过。
+  EcoCal.state.settings.gitee = { enabled: true, owner: 'myuser', repo: 'ecocal-backup', path: '', lastBackupAt: null, lastError: null };
+  const gKey3 = Object.keys(storage).find(k => k.startsWith('ecocal.backup.') && k.endsWith('.gitee'));
+
+  // 登记「待备份」标记：环境有暴露的 backupFlagSet 时用之（与 app.js 同键），否则直接写键
+  if (EcoCal.backupFlagSet) EcoCal.backupFlagSet('gitee');
+  else if (gKey3) storage[gKey3] = '1';
+
+  assert(EcoCal.backupFlagPending ? EcoCal.backupFlagPending('gitee') === true : true,
+    '补备：待备份标记已登记（专键写入 localStorage）');
+  const flagStored = Object.keys(storage).find(k => k.startsWith('ecocal.backup.') && k.endsWith('.gitee'));
+  assert(flagStored !== undefined, '补备：待备份标记使用独立 localStorage 键（不混入备份内容）');
+
+  // 重新挂 gitee mock fetch（第 7 段末尾已还原原 fetch，这里重新注入，段内自查）
+  // 注意：第 7 段 7.10 曾清空令牌，这里必须重新设置，否则 validate 拦截导致补传被跳过
+  EcoCal.giteeBackup.setToken('git-secret-token-123');
+
+  // 重新挂 gitee mock fetch（第 7 段末尾已还原原 fetch，这里重新注入，段内自查）
+  const mkFakeG = () => {
+    const fs = new Map();
+    const fake = (status, obj) => ({
+      ok: status >= 200 && status < 300, status,
+      headers: { get: k => (k === 'content-type' ? 'application/json' : null) },
+      text: () => Promise.resolve(JSON.stringify(obj)),
+      json: () => Promise.resolve(obj),
+    });
+    return { files: fs, fetch: async (url, opts = {}) => {
+      const u = String(url); const method = opts.method || 'GET';
+      if (u.includes('/api/v5/user')) return fake(200, { login: 'myuser', name: 'My Name' });
+      const ci = u.indexOf('/contents/');
+      if (ci !== -1) {
+        const fileKey = decodeURIComponent(u.slice(ci + 10).split('?')[0]);
+        if (method === 'GET') {
+          if (!fs.has(fileKey)) return fake(404, { message: 'Not Found' });
+          return fake(200, { sha: 'sha-' + fileKey, content: fs.get(fileKey) });
+        }
+        if (method === 'POST' || method === 'PUT') {
+          const body = opts.body ? new URLSearchParams(opts.body) : new URLSearchParams();
+          const exists = fs.has(fileKey);
+          if (method === 'POST' && exists) return fake(409, { message: 'exists' });
+          if (method === 'PUT' && body.get('sha') !== 'sha-' + fileKey) return fake(400, { message: 'sha mismatch' });
+          fs.set(fileKey, body.get('content'));
+          return fake(method === 'POST' ? 201 : 200, { content: { sha: 'sha-' + fileKey } });
+        }
+      }
+      return fake(404, { message: 'Not Found' });
+    } };
+  };
+  const gg = mkFakeG();
+  const origFetch3 = globalThis.fetch;
+  globalThis.fetch = gg.fetch;
+
+  // 清除旧的云端文件（模拟「上次没传成功」→ 云端没有备份）
+  gg.files.clear();
+
+  // —— 补备执行：有标记 → 直接上传（不依赖 60s 计时器）——
+  const outs = await EcoCal.catchUpBackup();
+  assert(outs.length === 1 && outs[0] === 'gitee:ok', '补备：有待备份标记时立即补传成功（' + JSON.stringify(outs) + '）');
+  assert(gg.files.has('ecocal-backup.json'), '补备：云端文件已写入（补传内容）');
+  const decomp = b64s => decodeURIComponent(escape(atob(String(b64s).replace(/\s+/g, ''))));
+  const caught = JSON.parse(decomp(gg.files.get('ecocal-backup.json')));
+  assert(caught.app === 'EcoCal' && Array.isArray(caught.assets), '补备：补传内容为有效 EcoCal 备份');
+  assert(EcoCal.backupFlagPending ? EcoCal.backupFlagPending('gitee') === false : true, '补备：成功后待备份标记已清除');
+
+  // —— 无标记 → 不补传（不产生多余上传）——
+  gg.files.clear();
+  const outs2 = await EcoCal.catchUpBackup();
+  assert(outs2.length === 0, '补备：无待备份标记时跳过（不产生上传）');
+  assert(!gg.files.has('ecocal-backup.json'), '补备：无标记时云端文件未写入');
+
+  // —— 补传失败：保留标记，下次再补 ——
+  const gKey4 = Object.keys(storage).find(k => k.startsWith('ecocal.backup.') && k.endsWith('.gitee'));
+  if (EcoCal.backupFlagSet) EcoCal.backupFlagSet('gitee');
+  else if (gKey4) storage[gKey4] = '1';
+  gg.files.clear();
+  // 让 /user 返回 401 → 补传失败
+  const failing = {
+    files: new Map(),
+    fetch: async (url, opts = {}) => ({
+      ok: false, status: 401,
+      headers: { get: k => null },
+      text: () => Promise.resolve('{"message":"无效的令牌"}'),
+      json: () => Promise.resolve({ message: '无效的令牌' }),
+    }),
+  };
+  globalThis.fetch = failing.fetch;
+  const outs3 = await EcoCal.catchUpBackup();
+  assert(outs3.length === 1 && String(outs3[0]).startsWith('gitee:fail'), '补备：补传失败时返回失败信息');
+  assert(EcoCal.backupFlagPending ? EcoCal.backupFlagPending('gitee') === true : true, '补备：失败后保留待备份标记（下次再补）');
+
+  // —— 禁用时除非配置完整，否则不补传（enabled=false 直接跳过） ——
+  EcoCal.state.settings.gitee.enabled = false;
+  globalThis.fetch = gg.fetch;
+  gg.files.clear();
+  const outs4 = await EcoCal.catchUpBackup();
+  assert(outs4.length === 0, '补备：禁用自动备份时不补传');
+
+  EcoCal.state.settings.gitee.enabled = true;
+  globalThis.fetch = origFetch3;
+  // 还原此前测试上下文（第 8 段起 PIN 测试不依赖云备份）
+  EcoCal.clearBackupTimers();
+}
 
 /* ---- 8. PIN 锁（安全） ---- */
 // 8.1 哈希与校验
@@ -1720,3 +1834,4 @@ assert(xlsxClicked, 'Excel：锚点 click 被触发');
 /* ---- 汇总结果 ---- */
 console.log('\n结果：' + pass + ' 通过，' + fail + ' 失败');
 if (fail > 0) process.exit(1);
+process.exit(0); // 全部通过：显式退出（清掉测试环境残留的任何活动句柄）

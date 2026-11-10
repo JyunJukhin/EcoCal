@@ -335,32 +335,41 @@ input,select,textarea{font-family:inherit;font-size:14px;color:var(--ink)}
 }
 .trend-range:focus{border-color:var(--accent)}
 
-/* ============ 筛选栏（吸附在 Tab 栏下方） ============ */
+/* ============ 筛选栏（吸附在 Tab 栏下方；窄屏默认一行，点「筛选」展开） ============ */
 .filter-bar{
   position:sticky;top:calc(var(--topbar-h, 58px) + var(--tabs-h, 44px));z-index:25;
-  display:flex;gap:10px;align-items:center;flex-wrap:wrap;
   background:var(--card);border:1px solid var(--line);
-  border-radius:14px;padding:10px 16px;margin:18px 0 16px;
+  border-radius:14px;padding:8px 12px;margin:14px 0 14px;
 }
-.filter-bar .sep{flex:1}
+.filter-bar .filter-row-top{display:flex;align-items:center;gap:8px}
+.filter-bar .filter-row-more{display:none;flex-wrap:wrap;align-items:center;gap:8px;margin-top:10px}
+.filter-bar.open .filter-row-more{display:flex}
+.filter-bar input[type=search]#filter-search{
+  flex:1;min-width:0;
+  background:#f5f5f7;border:1px solid var(--line);border-radius:10px;
+  padding:7px 10px 7px 12px;font-size:13px;outline:none;
+  color:var(--ink);transition:border-color .15s;
+}
+.filter-bar input[type=search]#filter-search::placeholder{color:var(--ink-3)}
+.filter-bar input[type=search]#filter-search:focus{border-color:var(--accent);background:#fff}
+.filter-bar input[type=search]#filter-search::-webkit-search-cancel-button{-webkit-appearance:none;appearance:none}
+html[data-theme="dark"] .filter-bar input[type=search]#filter-search{background:#2c2c30;color:var(--ink)}
+html[data-theme="dark"] .filter-bar input[type=search]#filter-search:focus{background:#333}
+html[data-theme="dark"] .filter-bar select{background:#2c2c30;color:var(--ink)}
+.filter-toggle{
+  display:inline-flex;align-items:center;gap:4px;flex-shrink:0;
+  background:transparent;border:1px solid var(--line);border-radius:999px;
+  padding:5px 12px;font-size:12.5px;color:var(--ink-2);cursor:pointer;transition:all .15s;
+}
+.filter-toggle:hover{border-color:var(--accent);color:var(--accent)}
+.filter-bar.open .filter-toggle-caret{transform:rotate(180deg)}
+.filter-toggle-caret{display:inline-block;font-size:10px;transition:transform .18s;color:var(--ink-3)}
 .filter-bar select{
   background:#f5f5f7;border:1px solid var(--line);border-radius:10px;
   padding:6px 10px;font-size:13px;outline:none;
 }
 .filter-bar select:focus{border-color:var(--accent)}
-.filter-bar input[type=search],
-.filter-bar input[type=search]#filter-search{
-  background:#f5f5f7;border:1px solid var(--line);border-radius:10px;
-  padding:6px 4px 6px 12px;font-size:13px;outline:none;
-  color:var(--ink);min-width:150px;width:190px;
-  transition:border-color .15s,width .2s ease;
-}
-.filter-bar input[type=search]#filter-search::placeholder{color:var(--ink-3)}
-.filter-bar input[type=search]#filter-search:focus{
-  border-color:var(--accent);width:230px;
-}
-.filter-bar input[type=search]#filter-search::-webkit-search-cancel-button{-webkit-appearance:none;appearance:none}
-html[data-theme="dark"] .filter-bar input[type=search]#filter-search{background:#2c2c30;color:var(--ink)}
+.filter-row-more .sep{flex:1}
 .filter-label{font-size:12px;color:var(--ink-3)}
 
 /* ============ 产品卡片列表 ============ */

@@ -117,16 +117,20 @@
     <!-- 资产速览条（当前筛选口径的 4 项合计，随筛选/数据联动） -->
     <section class="asset-summary" id="asset-summary"></section>
 
-    <!-- 筛选栏 -->
-    <section class="filter-bar">
-      <input id="filter-search" type="search" placeholder="搜索名称 / 代码 / 备注…" title="按名称、代码、备注搜索">
-      <span class="sep"></span>
-      <span class="filter-label">筛选：</span>
-      <select id="filter-category" title="按类别筛选"></select>
-      <select id="filter-currency" title="按币种筛选"></select>
-      <span class="sep"></span>
-      <span class="filter-label">排序：</span>
-      <select id="filter-sort" title="排序方式"></select>
+    <!-- 筛选栏（窄屏默认收成一行，点「筛选」展开高级条件） -->
+    <section class="filter-bar" id="filter-bar">
+      <div class="filter-row-top">
+        <input id="filter-search" type="search" placeholder="搜索名称 / 代码 / 备注…" title="按名称、代码、备注搜索" autocomplete="off">
+        <button type="button" class="filter-toggle" id="filter-toggle" title="展开 / 收起筛选条件">筛选<span class="filter-toggle-caret">▾</span></button>
+      </div>
+      <div class="filter-row-more" id="filter-more">
+        <span class="filter-label">筛选：</span>
+        <select id="filter-category" title="按类别筛选"></select>
+        <select id="filter-currency" title="按币种筛选"></select>
+        <span class="sep"></span>
+        <span class="filter-label">排序：</span>
+        <select id="filter-sort" title="排序方式"></select>
+      </div>
     </section>
 
     <!-- 产品列表 -->
