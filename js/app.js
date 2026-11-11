@@ -17,7 +17,7 @@ const STORAGE_KEY = 'ecocal.data.v1';
  * - 主版本：重大架构/功能（v3 多文件、v4 股票交易与行情、v6 交易记录全模式）
  * - 次版本：功能增强（v5 监察表模式与优化、v6.1 统计功能、v6.2 统计页重设计、v6.4 云备份）
  * - 补丁：缺陷修复 */
-const APP_VERSION = '6.6.0';
+const APP_VERSION = '6.6.1';
 
 const CURRENCIES = {
   CNY: { symbol: '¥',  name: '人民币' },
