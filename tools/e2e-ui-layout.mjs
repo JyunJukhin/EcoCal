@@ -302,6 +302,206 @@ try {
   })()`);
   check('桌面端「⋯」隐藏、按钮平铺（4 个操作）', r.moreDisplay === 'none' && r.navDisplay === 'flex' && r.navButtons === 4, JSON.stringify(r));
 
+  /* ================= 4b. 设置页备份面板：卡片化 + 介绍文字折叠 + 顶部迷你提示条 ================= */
+  await evaluate(`window.__EcoCal.switchTab('assets'); true`);
+  await evaluate(`window.__EcoCal.openSettings(); true`);
+  await sleep(300);
+  r = await evaluate(`(() => {
+    const tab = document.querySelector('.set-tab[data-tab="backup"]');
+    if (tab) tab.click();
+    const cards = document.querySelectorAll('.settings-section[data-section="backup"] .bk-card');
+    const details = document.querySelectorAll('.settings-section[data-section="backup"] details.bk-details');
+    const firstOpen = details[0] ? details[0].open : null;
+    return { cardCount: cards.length, detailsCount: details.length, firstOpen };
+  })()`);
+  check('设置备份页：4 个卡片区块、介绍文字收进折叠 details（默认收起）',
+    r.cardCount === 4 && r.detailsCount >= 3 && r.firstOpen === false, JSON.stringify(r));
+
+  r = await evaluate(`(() => {
+    const d = document.querySelector('.settings-section[data-section="backup"] details.bk-details');
+    const s = d.querySelector('summary');
+    s.click();
+    return { nowOpen: d.open };
+  })()`);
+  check('设置备份页：点击「详细说明」展开介绍文字', r.nowOpen === true, JSON.stringify(r));
+
+  // 顶部迷你提示条：成功/失败样式、3 秒后自动消失
+  await evaluate(`window.__EcoCal.showMiniToast('自动备份成功（Gitee）', 'ok'); true`);
+  await sleep(300);
+  r = await evaluate(`(() => {
+    const t = document.querySelector('.mini-toast');
+    return t ? { exists: true, text: t.textContent, cls: t.className } : { exists: false };
+  })()`);
+  check('迷你提示条：调用后出现在页面顶部（ok 样式）', r.exists === true && /mini-toast/.test(r.cls) && /ok/.test(r.cls) && r.text.indexOf('自动备份成功') > -1, JSON.stringify(r));
+
+  await evaluate(`window.__EcoCal.showMiniToast('自动备份失败：网络错误', 'err'); true`);
+  await sleep(300);
+  r = await evaluate(`(() => {
+    const t = document.querySelector('.mini-toast');
+    return t ? { exists: true, text: t.textContent, cls: t.className } : { exists: false };
+  })()`);
+  check('迷你提示条：新提示替换旧提示（err 样式）', r.exists === true && /err/.test(r.cls) && r.text.indexOf('自动备份失败') > -1, JSON.stringify(r));
+
+  await sleep(3200);
+  r = await evaluate(`!document.querySelector('.mini-toast')`);
+  check('迷你提示条：3 秒后自动消失（无需点击）', r === true);
+
+  await evaluate(`document.getElementById('modal-close').click(); true`);
+  await sleep(200);
+
+  /* ================= 4c. 顶栏主题按钮 + 设置汇率面板新布局 ================= */
+  // 顶栏主题按钮：循环切换 跟随系统→浅色→深色→跟随系统，并同步 data-theme 与图标
+  r = await evaluate(`(() => {
+    const btn = document.getElementById('btn-theme');
+    return { exists: !!btn, icon: btn ? btn.textContent.trim() : '' };
+  })()`);
+  check('顶栏主题按钮存在（🌓 默认图标）', r.exists === true && r.icon === '🌓', JSON.stringify(r));
+
+  await evaluate(`document.getElementById('btn-theme').click(); true`);
+  await sleep(150);
+  r = await evaluate(`(() => {
+    const btn = document.getElementById('btn-theme');
+    return { icon: btn.textContent.trim(), theme: document.documentElement.getAttribute('data-theme') };
+  })()`);
+  check('点击主题按钮：浅色（☀️，移除 data-theme）', r.icon === '☀️' && r.theme === null, JSON.stringify(r));
+
+  await evaluate(`document.getElementById('btn-theme').click(); true`);
+  await sleep(150);
+  r = await evaluate(`(() => {
+    const btn = document.getElementById('btn-theme');
+    return { icon: btn.textContent.trim(), theme: document.documentElement.getAttribute('data-theme') };
+  })()`);
+  check('再次点击：深色（🌙，data-theme=dark）', r.icon === '🌙' && r.theme === 'dark', JSON.stringify(r));
+
+  await evaluate(`document.getElementById('btn-theme').click(); true`);
+  await sleep(150);
+  r = await evaluate(`(() => {
+    const btn = document.getElementById('btn-theme');
+    const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const theme = document.documentElement.getAttribute('data-theme');
+    const expect = prefersDark ? 'dark' : null;
+    return { icon: btn.textContent.trim(), theme, expect };
+  })()`);
+  check('三次点击：回到跟随系统（🌓，data-theme 与系统偏好一致）', r.icon === '🌓' && r.theme === r.expect, JSON.stringify(r));
+
+  // 设置汇率面板：rate-row 卡片化布局（币种名 + 圆角输入框 + 短后缀，无长文案）
+  await evaluate(`window.__EcoCal.openSettings(); true`);
+  await sleep(300);
+  r = await evaluate(`(() => {
+    const rows = document.querySelectorAll('.settings-section[data-section="basic"] .rate-row');
+    const input = document.querySelector('.settings-section[data-section="basic"] .rate-row .rate-input');
+    const unit = document.querySelector('.settings-section[data-section="basic"] .rate-row .rate-unit');
+    const tip = document.querySelector('.settings-section[data-section="basic"] .settings-tip');
+    return {
+      rowCount: rows.length,
+      inputRadius: input ? getComputedStyle(input).borderRadius : '',
+      inputWidth: input ? getComputedStyle(input).width : '',
+      unitText: unit ? unit.textContent : '',
+      tipLen: tip ? tip.textContent.length : 0,
+    };
+  })()`);
+  check('设置汇率页：rate-row 卡片化且输入框圆角、后缀精简',
+    r.rowCount > 0 && r.inputRadius !== '0px' && r.unitText.indexOf('兑') > -1 && r.tipLen < 80,
+    JSON.stringify(r));
+
+  await evaluate(`document.getElementById('modal-close').click(); true`);
+  await sleep(200);
+
+  /* ================= 4d. 设置面板滚动置顶 + 深色滚动条 ================= */
+  // 设置面板：滚到底 → 关闭 → 重开，scrollTop 应重置为 0（而非停留在原位置）
+  await evaluate(`window.__EcoCal.openSettings(); true`);
+  await sleep(300);
+  r = await evaluate(`(() => {
+    const mb = document.getElementById('modal-body');
+    mb.scrollTop = 999999;
+    return { scrollable: mb.scrollHeight > mb.clientHeight, scrolled: mb.scrollTop };
+  })()`);
+  check('设置面板可滚动且已滚到底', r.scrollable === true && r.scrolled > 0, JSON.stringify(r));
+
+  await evaluate(`document.getElementById('modal-close').click(); true`);
+  await sleep(200);
+  await evaluate(`window.__EcoCal.openSettings(); true`);
+  await sleep(300);
+  r = await evaluate(`document.getElementById('modal-body').scrollTop`);
+  check('设置面板关闭重开后 scrollTop 重置为 0（不再停留在最底）', r === 0, 'scrollTop=' + r);
+  await evaluate(`document.getElementById('modal-close').click(); true`);
+  await sleep(200);
+
+  // 深色模式下滚动条颜色随主题（检查 CSS 规则存在且 thumb 为浅色系）
+  await evaluate(`document.getElementById('btn-theme').click(); document.getElementById('btn-theme').click(); true`); // → 深色
+  await sleep(200);
+  r = await evaluate(`(() => {
+    const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+    let darkThumb = null, lightThumb = null;
+    for (const sheet of document.styleSheets) {
+      let rules = [];
+      try { rules = sheet.cssRules || []; } catch (e) { continue; }
+      for (const rule of rules) {
+        const sel = rule.selectorText || '';
+        if (sel.includes('::-webkit-scrollbar-thumb')) {
+          if (sel.includes('data-theme="dark"')) darkThumb = rule.style.background || '';
+          else lightThumb = rule.style.background || '';
+        }
+      }
+    }
+    return { dark, darkThumb, lightThumb };
+  })()`);
+  check('深色模式下滚动条 thumb 为浅色系（深色背景用浅色滚动条）',
+    r.dark === true && /rgba\(255,\s*255,\s*255/.test(r.darkThumb || '') && /rgba\(0,\s*0,\s*0/.test(r.lightThumb || ''),
+    JSON.stringify(r));
+  await evaluate(`document.getElementById('btn-theme').click(); true`); // 回到跟随系统
+
+  /* ================= 4e. 设置弹窗滚动锁 + Tab 吸顶 + checkbox 美化（switch） ================= */
+  // ①滚动锁：弹窗打开时主页面 body 应锁定滚动（overflow:hidden），关闭后恢复
+  await evaluate(`window.__EcoCal.openSettings(); true`);
+  await sleep(300);
+  r = await evaluate(`document.body.style.overflow`);
+  check('设置弹窗打开：主页面滚动被锁定（body overflow hidden）', r === 'hidden', 'overflow=' + r);
+  // Tab 吸顶：.settings-tabs 的 computed position 为 sticky
+  r = await evaluate(`(() => {
+    const tabs = document.querySelector('.settings-tabs');
+    return tabs ? getComputedStyle(tabs).position : '';
+  })()`);
+  check('设置 Tab 栏吸顶（position:sticky）', r === 'sticky', 'position=' + r);
+
+  // ④checkbox 美化：设置面板里所有 checkbox 都包在 .switch 结构中（track/thumb）
+  r = await evaluate(`(() => {
+    const checkboxes = document.querySelectorAll('.settings-section input[type="checkbox"]');
+    let allWrapped = checkboxes.length > 0;
+    checkboxes.forEach(cb => {
+      const sw = cb.closest('.switch');
+      if (!sw || !sw.querySelector('.track') || !sw.querySelector('.thumb')) allWrapped = false;
+    });
+    return { count: checkboxes.length, allWrapped };
+  })()`);
+  check('设置面板：所有 checkbox 均已美化为 switch（含 track/thumb）', r.allWrapped && r.count >= 6, JSON.stringify(r));
+
+  // ③安全页：PIN 开关为 switch 结构 + 卡片化排布，状态文案「已开启/未开启」
+  await evaluate(`(() => {
+    const tab = document.querySelector('.set-tab[data-tab="security"]');
+    if (tab) tab.click();
+    return true;
+  })()`);
+  await sleep(200);
+  r = await evaluate(`(() => {
+    const pinToggle = document.getElementById('s-pin-toggle');
+    const secCard = document.querySelector('.settings-section[data-section="security"] .bk-card');
+    return {
+      pinSwitch: !!pinToggle && !!pinToggle.closest('.switch'),
+      pinChecked: !!pinToggle && pinToggle.checked,
+      hasCard: !!secCard,
+      statusText: secCard ? (secCard.querySelector('.switch-row span') || {}).textContent || '' : '',
+    };
+  })()`);
+  check('设置安全页：PIN 开关为 switch 结构且未开启',
+    r.pinSwitch === true && r.pinChecked === false && r.hasCard === true && r.statusText.indexOf('未开启') > -1,
+    JSON.stringify(r));
+
+  await evaluate(`document.getElementById('modal-close').click(); true`);
+  await sleep(200);
+  r = await evaluate(`document.body.style.overflow`);
+  check('设置弹窗关闭：主页面滚动恢复（body overflow 还原）', r === '', 'overflow=' + r);
+
   /* ================= 5. 无 JS 异常 ================= */
   check('运行期间无未捕获 JS 异常', jsErrors === 0, 'errors=' + jsErrors);
 

@@ -17,7 +17,7 @@ const STORAGE_KEY = 'ecocal.data.v1';
  * - 主版本：重大架构/功能（v3 多文件、v4 股票交易与行情、v6 交易记录全模式）
  * - 次版本：功能增强（v5 监察表模式与优化、v6.1 统计功能、v6.2 统计页重设计、v6.4 云备份）
  * - 补丁：缺陷修复 */
-const APP_VERSION = '6.6.1';
+const APP_VERSION = '6.6.2';
 
 const CURRENCIES = {
   CNY: { symbol: '¥',  name: '人民币' },
@@ -1817,6 +1817,18 @@ function renderAll() {
 /* ---------------- 模态框 ---------------- */
 let modalOnOk = null;
 
+/** 锁定/恢复主页面滚动（弹窗与 PIN 遮罩打开时禁止页面滚动，滚动事件只在弹窗内发生） */
+function lockPageScroll() {
+  if (typeof document !== 'undefined' && document.body && document.body.style) {
+    document.body.style.overflow = 'hidden';
+  }
+}
+function unlockPageScroll() {
+  if (typeof document !== 'undefined' && document.body && document.body.style) {
+    document.body.style.overflow = '';
+  }
+}
+
 function openModal(title, bodyHTML, onOk, okText) {
   $id('modal-title').textContent = title;
   $id('modal-body').innerHTML = bodyHTML;
@@ -1824,11 +1836,24 @@ function openModal(title, bodyHTML, onOk, okText) {
   $id('modal-ok').classList.remove('hidden'); // 恢复默认显示（导出面板会隐藏它）
   modalOnOk = onOk;
   $id('modal-backdrop').classList.remove('hidden');
+  // 弹窗打开时锁定主页面滚动（弹窗内滚动仍正常，modal-body 自带 overflow-y:auto）
+  lockPageScroll();
+  // 每次打开都从弹窗内容最顶部开始：必须在弹窗显示后再重置 scrollTop，
+  // 否则元素处于 display:none 时赋值无效，显示后浏览器会恢复上次的滚动位置
+  const mb = $id('modal-body');
+  if (mb && typeof mb.scrollTop === 'number') mb.scrollTop = 0;
 }
 function closeModal() {
   $id('modal-backdrop').classList.add('hidden');
   $id('modal-ok').classList.remove('hidden');
   modalOnOk = null;
+  // 弹窗关闭后恢复主页面滚动（若 PIN 遮罩仍显示则保持锁定，由 pinLock/pinUnlock 接管）
+  if (!pinLockedVisible()) unlockPageScroll();
+}
+/** 判断 PIN 锁遮罩当前是否可见（用于 closeModal 决定是否恢复主页面滚动） */
+function pinLockedVisible() {
+  const ov = typeof $id === 'function' ? $id('pin-lock') : null;
+  return !!(ov && ov.classList && !ov.classList.contains('hidden'));
 }
 
 function confirmAction(title, text, onConfirm, okText) {
@@ -1837,17 +1862,27 @@ function confirmAction(title, text, onConfirm, okText) {
   $id('confirm-ok').textContent = okText || '确认';
   $id('confirm-ok').onclick = () => {
     $id('confirm-backdrop').classList.add('hidden');
+    // 确认框关闭后若无其它弹窗则恢复滚动
+    if (!pinLockedVisible() && (!$id('modal-backdrop') || $id('modal-backdrop').classList.contains('hidden'))) unlockPageScroll();
     onConfirm();
   };
   $id('confirm-backdrop').classList.remove('hidden');
+  // 确认弹窗同样锁定主页面滚动
+  lockPageScroll();
 }
 
 function bindModalButtons() {
   $id('modal-close').onclick = closeModal;
   $id('modal-cancel').onclick = closeModal;
   $id('modal-ok').onclick = () => { if (modalOnOk) modalOnOk(); };
-  $id('confirm-close').onclick = () => $id('confirm-backdrop').classList.add('hidden');
-  $id('confirm-cancel').onclick = () => $id('confirm-backdrop').classList.add('hidden');
+  $id('confirm-close').onclick = () => {
+    $id('confirm-backdrop').classList.add('hidden');
+    if (!pinLockedVisible() && (!$id('modal-backdrop') || $id('modal-backdrop').classList.contains('hidden'))) unlockPageScroll();
+  };
+  $id('confirm-cancel').onclick = () => {
+    $id('confirm-backdrop').classList.add('hidden');
+    if (!pinLockedVisible() && (!$id('modal-backdrop') || $id('modal-backdrop').classList.contains('hidden'))) unlockPageScroll();
+  };
 }
 
 /* ---- 产品表单 ---- */
@@ -2613,10 +2648,12 @@ function settingsHTML(settings) {
   const rows = Object.keys(CURRENCIES).map(c => {
     if (c === settings.baseCurrency) return '';
     const rate = settings.rates[c] || '';
-    return '<div class="rate-row" data-cur="' + c + '">' +
-      '<div><b>' + c + '</b> <span class="money">' + currencyName(c) + '</span></div>' +
-      '<input type="number" min="0" step="any" class="rate-input" data-cur="' + c + '" value="' + esc(rate) + '" placeholder="如 7.25">' +
-      '<span class="money">= 1 ' + c + ' 兑 ' + settings.baseCurrency + '</span>' +
+    return '<div class="rate-row">' +
+      '<div class="rate-name"><b>' + c + '</b> <span class="money">' + currencyName(c) + '</span></div>' +
+      '<div class="rate-input-wrap">' +
+        '<input type="number" min="0" step="any" class="rate-input" data-cur="' + c + '" value="' + esc(rate) + '" placeholder="未设置">' +
+        '<span class="rate-unit">1 ' + c + ' 兑 ' + settings.baseCurrency + '</span>' +
+      '</div>' +
     '</div>';
   }).join('');
   const lastUpdate = settings.ratesUpdatedAt
@@ -2626,7 +2663,6 @@ function settingsHTML(settings) {
   const remDaysVal = (rem.days != null && Number(rem.days) > 0) ? Number(rem.days) : 7;
   return '<div class="settings-tabs">' +
       '<button type="button" class="set-tab on" data-tab="basic">汇率与行情</button>' +
-      '<button type="button" class="set-tab" data-tab="appearance">外观</button>' +
       '<button type="button" class="set-tab" data-tab="stats">统计</button>' +
       '<button type="button" class="set-tab" data-tab="backup">备份</button>' +
       '<button type="button" class="set-tab" data-tab="security">安全</button>' +
@@ -2634,39 +2670,29 @@ function settingsHTML(settings) {
     '<div class="settings-sections">' +
     '<section class="settings-section" data-section="basic">' +
       '<h4 class="settings-sec-title">汇率与行情</h4>' +
-      '<div class="settings-tip">汇率用于把各币种资产换算为<b>基准币种</b>做总价值统计。可点击下方按钮<b>联网获取最新汇率</b>（免费公开接口，仅供统计参考，不做行情依据）；也可手动维护。未设置汇率的币种会<b>不计入总额统计</b>，并在界面标注提醒。</div>' +
+      '<div class="settings-tip">汇率用于把各币种资产换算成<b>基准币种</b>统计总额，可联网获取或手动填写；未设置的币种不计入总额并会提醒。</div>' +
       '<div class="field" style="margin-bottom:10px"><label>基准（统计）币种</label>' +
       '<select id="s-base">' + Object.keys(CURRENCIES).map(c =>
         '<option value="' + c + '"' + (c === settings.baseCurrency ? ' selected' : '') + '>' + c + ' ' + currencyName(c) + '</option>').join('') +
-      '</select><div class="hint">切换基准币种时，现有汇率会自动按比例折算，保持各币种相对价值不变。</div></div>' +
+      '</select><div class="hint">切换基准币种时，现有汇率自动按比例折算，保持各币种相对价值不变。</div></div>' +
       '<div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap">' +
         '<button type="button" id="s-fetch" class="btn btn-primary btn-mini">⟳ 获取最新汇率</button>' +
-        '<label style="font-size:12px;color:var(--ink-2);display:inline-flex;gap:6px;align-items:center">' +
-          '<input type="checkbox" id="s-autofetch"' + (settings.autoFetchRates !== false ? ' checked' : '') + '> 每次启动自动获取一次' +
+        '<label class="switch-row"><span>启动时自动获取</span>' +
+          '<span class="switch"><input type="checkbox" id="s-autofetch"' + (settings.autoFetchRates !== false ? ' checked' : '') + '><span class="track"></span><span class="thumb"></span></span>' +
         '</label>' +
       '</div>' +
       '<div class="hint" id="s-updated" style="font-size:12px;color:var(--ink-3);margin-bottom:10px">' + lastUpdate + '</div>' +
-      '<div class="field" style="margin-bottom:4px"><label>各币种汇率（1 币种 = X 基准币种）</label></div>' + rows +
-      '<div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--line)">' +
-        '<div class="field" style="margin-bottom:8px"><label>行情设置（填写了行情代码的产品）</label></div>' +
+      '<div class="field" style="margin-bottom:6px"><label>各币种汇率（1 币种兑 ' + esc(settings.baseCurrency) + '）</label></div>' + rows +
+      '<div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--line)">' +
+        '<div class="field" style="margin-bottom:8px"><label>行情（填写了行情代码的产品）</label></div>' +
         '<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">' +
-          '<label style="font-size:12px;color:var(--ink-2);display:inline-flex;gap:6px;align-items:center">' +
-            '<input type="checkbox" id="s-autoquote"' + (settings.autoQuote !== false ? ' checked' : '') + '> 打开页面自动刷新行情（每产品 10 分钟一次）' +
+          '<label class="switch-row"><span>打开页面自动刷新（每产品 10 分钟一次）</span>' +
+            '<span class="switch"><input type="checkbox" id="s-autoquote"' + (settings.autoQuote !== false ? ' checked' : '') + '><span class="track"></span><span class="thumb"></span></span>' +
           '</label>' +
           '<button type="button" id="s-refresh-all" class="btn btn-ghost btn-mini">⟳ 立即刷新全部行情</button>' +
         '</div>' +
-        '<div class="hint" style="margin-top:8px">行情来自腾讯公开免费接口，仅供记录与计算参考；接口不可用时用卡片上的「✎ 现价 / ✎ 市值」手动录入。</div>' +
+        '<div class="hint" style="margin-top:8px">行情来自腾讯公开免费接口，仅作参考；不可用时用卡片上的「✎ 现价 / ✎ 市值」手动录入。</div>' +
       '</div>' +
-    '</section>' +
-    '<section class="settings-section" data-section="appearance">' +
-      '<h4 class="settings-sec-title">外观</h4>' +
-      '<div class="field" style="margin-bottom:4px"><label>主题模式</label>' +
-      '<select id="s-theme">' +
-        '<option value="auto"' + ((settings.themeMode || 'auto') === 'auto' ? ' selected' : '') + '>跟随系统</option>' +
-        '<option value="light"' + ((settings.themeMode || 'auto') === 'light' ? ' selected' : '') + '>浅色</option>' +
-        '<option value="dark"' + ((settings.themeMode || 'auto') === 'dark' ? ' selected' : '') + '>深色</option>' +
-      '</select>' +
-      '<div class="hint">选择「跟随系统」时随手机/电脑系统的深浅色自动切换；也可手动固定为浅色或深色。</div></div>' +
     '</section>' +
     '<section class="settings-section" data-section="stats">' +
       '<h4 class="settings-sec-title">统计</h4>' +
@@ -2687,40 +2713,54 @@ function settingsHTML(settings) {
     '</section>' +
     '<section class="settings-section" data-section="backup">' +
       '<h4 class="settings-sec-title">备份</h4>' +
-      '<div class="field" style="margin-bottom:8px"><label>云备份（WebDAV，可选）</label></div>' +
-      '<div class="hint" style="margin-bottom:10px">配置后可把数据<b>自动备份到 WebDAV 网盘</b>，防止清缓存/换设备丢数据。每次改动后自动上传（停止编辑 60 秒后合并同步，切后台立即同步），云端为单文件覆盖式，最多保留最近一份。</div>' +
-      '<div class="field" style="margin-bottom:8px"><label>WebDAV 地址</label>' +
-      '<input type="url" id="wd-url" placeholder="https://data.cstcloud.cn/dav/" value="' + esc(settings.webdav && settings.webdav.url || '') + '">' +
-      '<div class="hint">中国科技云·数据胶囊：https://data.cstcloud.cn/dav/；坚果云：dav.jianguoyun.com/dav/；需要「应用密码」而不是登录密码。部分服务（如 Zotero 专用 WebDAV）禁止新建目录，会自动改用其可写目录。</div></div>' +
-      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px 14px;margin-bottom:8px">' +
-        '<div class="field"><label>用户名 / 邮箱</label>' +
-        '<input type="text" id="wd-user" autocomplete="username" value="' + esc(settings.webdav && settings.webdav.user || '') + '"></div>' +
-        '<div class="field"><label>应用密码</label>' +
-        '<input type="password" id="wd-pass" autocomplete="new-password" placeholder="' + (webdavPwdSet() ? '（已保存，留空则不变）' : '') + '" value="">' +
-        '<div class="hint">不会出现在备份文件与导出内容里，仅存本机。</div></div>' +
+      '<div class="settings-tip">配置云备份后，每次数据改动会自动上传（停止编辑 60 秒后合并同步、切后台立即同步），防止清缓存/换设备丢数据。支持 WebDAV 网盘与 Gitee 仓库两种目标，可同时启用。</div>' +
+      /* ---- 卡片 1：WebDAV 云备份 ---- */
+      '<div class="bk-card">' +
+        '<div class="bk-card-head">' +
+          '<b class="bk-title">☁ WebDAV 网盘（可选）</b>' +
+          '<label class="switch-row" style="margin-bottom:0"><span>启用自动备份</span>' +
+            '<span class="switch"><input type="checkbox" id="wd-enabled"' + (settings.webdav && settings.webdav.enabled ? ' checked' : '') + '><span class="track"></span><span class="thumb"></span></span>' +
+          '</label>' +
+        '</div>' +
+        '<details class="bk-details"><summary>详细说明</summary>' +
+          '<div class="bk-details-body">配置后可把数据自动备份到 WebDAV 网盘，防止清缓存/换设备丢数据。每次改动后自动上传（停止编辑 60 秒后合并同步，切后台立即同步），云端为单文件覆盖式，最多保留最近一份。中国科技云·数据胶囊：https://data.cstcloud.cn/dav/；坚果云：dav.jianguoyun.com/dav/；需要「应用密码」而不是登录密码。部分服务（如 Zotero 专用 WebDAV）禁止新建目录，会自动改用其可写目录。</div>' +
+        '</details>' +
+        '<div class="field" style="margin-bottom:8px"><label>WebDAV 地址</label>' +
+        '<input type="url" id="wd-url" placeholder="https://data.cstcloud.cn/dav/" value="' + esc(settings.webdav && settings.webdav.url || '') + '"></div>' +
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px 14px;margin-bottom:8px">' +
+          '<div class="field"><label>用户名 / 邮箱</label>' +
+          '<input type="text" id="wd-user" autocomplete="username" value="' + esc(settings.webdav && settings.webdav.user || '') + '"></div>' +
+          '<div class="field"><label>应用密码</label>' +
+          '<input type="password" id="wd-pass" autocomplete="new-password" placeholder="' + (webdavPwdSet() ? '（已保存，留空则不变）' : '') + '" value="">' +
+          '<div class="hint">不会出现在备份文件与导出内容里，仅存本机。</div></div>' +
+        '</div>' +
+        '<div class="field" style="margin-bottom:10px"><label>云端目录（自动创建）</label>' +
+        '<input type="text" id="wd-dir" value="' + esc(settings.webdav && settings.webdav.dir || 'EcoCal') + '" placeholder="EcoCal">' +
+        '<div class="hint">备份文件将保存在该目录下的 ecocal-backup.json。</div></div>' +
+        '<div class="bk-actions">' +
+          '<button type="button" id="wd-test" class="btn btn-ghost btn-mini">🔌 测试连接</button>' +
+          '<button type="button" id="wd-backup" class="btn btn-primary btn-mini">⬆ 立即备份</button>' +
+          '<button type="button" id="wd-restore" class="btn btn-ghost btn-mini">⬇ 从云端恢复</button>' +
+          '<button type="button" id="wd-clear-pass" class="btn btn-ghost btn-mini" style="display:' + (webdavPwdSet() ? '' : 'none') + '">清除已存密码</button>' +
+        '</div>' +
+        '<div class="hint" id="wd-status" style="font-size:12px;margin-bottom:6px"></div>' +
       '</div>' +
-      '<div class="field" style="margin-bottom:10px"><label>云端目录（自动创建）</label>' +
-      '<input type="text" id="wd-dir" value="' + esc(settings.webdav && settings.webdav.dir || 'EcoCal') + '" placeholder="EcoCal">' +
-      '<div class="hint">备份文件将保存在该目录下的 ecocal-backup.json。</div></div>' +
-      '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:6px">' +
-        '<button type="button" id="wd-test" class="btn btn-ghost btn-mini">🔌 测试连接</button>' +
-        '<button type="button" id="wd-backup" class="btn btn-primary btn-mini">⬆ 立即备份</button>' +
-        '<button type="button" id="wd-restore" class="btn btn-ghost btn-mini">⬇ 从云端恢复</button>' +
-        '<button type="button" id="wd-clear-pass" class="btn btn-ghost btn-mini" style="display:' + (webdavPwdSet() ? '' : 'none') + '">清除已存密码</button>' +
-      '</div>' +
-      '<div class="hint" id="wd-status" style="font-size:12px;margin-bottom:6px"></div>' +
-      '<label style="font-size:12px;color:var(--ink-2);display:inline-flex;gap:6px;align-items:center">' +
-        '<input type="checkbox" id="wd-enabled"' + (settings.webdav && settings.webdav.enabled ? ' checked' : '') + '> 启用自动备份（每次数据改动后自动上传，停止编辑 60 秒后同步）' +
-      '</label>' +
-      '<div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--line)">' +
-        '<div class="field" style="margin-bottom:8px"><label>云备份（Gitee 仓库，可选）</label></div>' +
-        '<div class="hint" style="margin-bottom:10px">配置后可把数据<b>自动备份到你的 Gitee 仓库</b>，防止清缓存/换设备丢数据。网页可直接跨域访问 Gitee API（无需额外客户端），每次改动后自动上传（停止编辑 60 秒后合并同步，切后台立即同步），云端为单文件覆盖式（存储格式 .json）。</div>' +
+      /* ---- 卡片 2：Gitee 云备份 ---- */
+      '<div class="bk-card">' +
+        '<div class="bk-card-head">' +
+          '<b class="bk-title">📦 Gitee 仓库（可选）</b>' +
+          '<label class="switch-row" style="margin-bottom:0"><span>启用自动备份</span>' +
+            '<span class="switch"><input type="checkbox" id="g-enabled"' + (settings.gitee && settings.gitee.enabled ? ' checked' : '') + '><span class="track"></span><span class="thumb"></span></span>' +
+          '</label>' +
+        '</div>' +
+        '<details class="bk-details"><summary>详细说明</summary>' +
+          '<div class="bk-details-body">配置后可把数据自动备份到你的 Gitee 仓库，防止清缓存/换设备丢数据。网页可直接跨域访问 Gitee API（无需额外客户端），每次改动后自动上传（停止编辑 60 秒后合并同步，切后台立即同步），云端为单文件覆盖式（存储格式 .json）。建议使用私有仓库存放备份。</div>' +
+        '</details>' +
         '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px 14px;margin-bottom:8px">' +
           '<div class="field"><label>Gitee 用户名 / 组织</label>' +
           '<input type="text" id="g-owner" autocomplete="username" placeholder="如 yourname" value="' + esc(settings.gitee && settings.gitee.owner || '') + '"></div>' +
           '<div class="field"><label>仓库名</label>' +
-          '<input type="text" id="g-repo" placeholder="如 ecocal-backup" value="' + esc(settings.gitee && settings.gitee.repo || '') + '">' +
-          '<div class="hint">建议使用<b>私有</b>仓库存放备份。</div></div>' +
+          '<input type="text" id="g-repo" placeholder="如 ecocal-backup" value="' + esc(settings.gitee && settings.gitee.repo || '') + '"></div>' +
         '</div>' +
         '<div class="field" style="margin-bottom:8px"><label>私人令牌（access_token）</label>' +
         '<input type="password" id="g-token" autocomplete="new-password" placeholder="' + (giteeTokenSet() ? '（已保存，留空则不变）' : '') + '" value="">' +
@@ -2728,28 +2768,29 @@ function settingsHTML(settings) {
         '<div class="field" style="margin-bottom:10px"><label>仓库内备份文件路径</label>' +
         '<input type="text" id="g-path" value="' + esc(settings.gitee && settings.gitee.path || 'ecocal-backup.json') + '" placeholder="ecocal-backup.json">' +
         '<div class="hint">默认 ecocal-backup.json，存于仓库根目录。</div></div>' +
-        '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:6px">' +
+        '<div class="bk-actions">' +
           '<button type="button" id="g-test" class="btn btn-ghost btn-mini">🔌 测试连接</button>' +
           '<button type="button" id="g-backup" class="btn btn-primary btn-mini">⬆ 立即备份</button>' +
           '<button type="button" id="g-restore" class="btn btn-ghost btn-mini">⬇ 从云端恢复</button>' +
           '<button type="button" id="g-clear-token" class="btn btn-ghost btn-mini" style="display:' + (giteeTokenSet() ? '' : 'none') + '">清除已存令牌</button>' +
         '</div>' +
         '<div class="hint" id="g-status" style="font-size:12px;margin-bottom:6px"></div>' +
-        '<label style="font-size:12px;color:var(--ink-2);display:inline-flex;gap:6px;align-items:center">' +
-          '<input type="checkbox" id="g-enabled"' + (settings.gitee && settings.gitee.enabled ? ' checked' : '') + '> 启用自动备份（每次数据改动后自动上传，停止编辑 60 秒后同步）' +
-        '</label>' +
       '</div>' +
-      '<div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--line)">' +
-        '<div class="field" style="margin-bottom:8px"><label>备份提醒（可选）</label>' +
-        '<label style="font-size:12px;color:var(--ink-2);display:inline-flex;gap:6px;align-items:center;margin-bottom:8px">' +
-          '<input type="checkbox" id="rem-enabled"' + (rem.enabled ? ' checked' : '') + '> 超过 N 天没有成功备份时，提醒我手动备份' +
+      /* ---- 卡片 3：备份提醒 ---- */
+      '<div class="bk-card">' +
+        '<div class="bk-card-head"><b class="bk-title">⏰ 备份提醒（可选）</b></div>' +
+        '<details class="bk-details"><summary>详细说明</summary>' +
+          '<div class="bk-details-body">若本机数据超过 N 天没有成功备份（未配置自动备份或自动备份连续失败），打开页面时会提醒一次并引导去「导出 / 立即备份」。</div>' +
+        '</details>' +
+        '<label class="switch-row" style="margin-bottom:8px"><span>超过 N 天没有成功备份时，提醒我手动备份</span>' +
+          '<span class="switch"><input type="checkbox" id="rem-enabled"' + (rem.enabled ? ' checked' : '') + '><span class="track"></span><span class="thumb"></span></span>' +
         '</label>' +
         '<div class="field" style="margin-bottom:4px"><label>间隔天数（N）</label>' +
-        '<input type="number" id="rem-days" min="1" max="365" step="1" value="' + remDaysVal + '">' +
-        '<div class="hint">若本机数据超过 N 天没有成功备份（未配置自动备份或自动备份连续失败），打开页面时会提醒一次并引导去「导出 / 立即备份」。</div></div>' +
+        '<input type="number" id="rem-days" min="1" max="365" step="1" value="' + remDaysVal + '"></div>' +
       '</div>' +
-      '<div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--line)">' +
-        '<div class="field" style="margin-bottom:8px"><label>数据管理</label></div>' +
+      /* ---- 卡片 4：数据管理 ---- */
+      '<div class="bk-card">' +
+        '<div class="bk-card-head"><b class="bk-title">🗑 数据管理</b></div>' +
         '<div class="hint" style="margin-bottom:10px">清空会删除全部产品、交易记录与汇率设置（可撤销：页面底部会出现「撤销」提示条）。</div>' +
         '<button type="button" id="s-clear" class="btn btn-danger btn-mini">🗑 清空全部数据</button>' +
       '</div>' +
@@ -2814,8 +2855,7 @@ function openSettings() {
     alert('行情刷新完成；失败的产品保留原值，可稍后单个重试或手动录价。');
   };
 
-  // 外观：主题模式切换立即生效（无需等「保存设置」）
-  bindThemeSettings();
+  // 外观（主题）已移到顶栏「🌓」按钮循环切换，不再放在设置面板内
 
   // 清空全部数据（危险操作，二次确认）
   $id('s-clear').onclick = clearAll;
@@ -3108,12 +3148,7 @@ function openSettings() {
         else { alert('PIN 不正确，已保留当前 PIN 锁。'); pinToggle.checked = true; }
       }
     }
-    // 外观：主题模式（跟随系统 / 浅色 / 深色）
-    const themeSel = $id('s-theme');
-    if (themeSel) {
-      state.settings.themeMode = themeSel.value || 'auto';
-      applyTheme();
-    }
+    // 主题模式已移到顶栏「🌓」按钮，不再从设置面板读取
     saveState(); renderAll(); closeModal();
     // 关闭设置后恢复主页面在打开设置前的滚动位置（用户在长列表里打开/关闭设置不丢失位置）
     if (typeof window !== 'undefined' && typeof window.scrollTo === 'function') {
@@ -3124,15 +3159,26 @@ function openSettings() {
   };
 }
 
-/** 主题设置：切换时立即生效（无需等「保存设置」），并持久化 */
-function bindThemeSettings() {
-  const themeSel = $id('s-theme');
-  if (!themeSel) return;
-  themeSel.onchange = () => {
-    state.settings.themeMode = themeSel.value || 'auto';
-    applyTheme();
-    saveState();
-  };
+/** 主题模式循环切换（顶栏「🌓」按钮）：跟随系统 → 浅色 → 深色 → 跟随系统，即时生效并持久化 */
+function cycleTheme() {
+  const order = ['auto', 'light', 'dark'];
+  const cur = state.settings.themeMode || 'auto';
+  const next = order[(order.indexOf(cur) + 1) % order.length];
+  state.settings.themeMode = next;
+  applyTheme();
+  saveState();
+  updateThemeButton();
+  return next;
+}
+/** 根据当前主题模式更新顶栏按钮图标与提示 */
+function updateThemeButton() {
+  const btn = typeof document !== 'undefined' ? document.getElementById('btn-theme') : null;
+  if (!btn) return;
+  const mode = state.settings.themeMode || 'auto';
+  const map = { auto: ['🌓', '主题：跟随系统'], light: ['☀️', '主题：浅色'], dark: ['🌙', '主题：深色'] };
+  btn.textContent = map[mode][0];
+  btn.setAttribute('title', map[mode][1]);
+  btn.setAttribute('aria-label', map[mode][1]);
 }
 
 /* ---------------- 云备份（WebDAV） ---------------- */
@@ -3431,45 +3477,57 @@ function gateFlush() {
   }
 }
 
+/** 备份进行中标记（section → bool）：防止「60s 定时器」与「回到前台补备」并发双备份 */
+const backupInFlight = { webdav: false, gitee: false };
+
+/**
+ * 记录一次备份结果（成功时间 / 失败原因），**同步更新内存 state 与 localStorage 原始 JSON**。
+ * 设置面板（gLast()）读取的是内存 state.settings[section]；此前自动备份只写 localStorage
+ * 不写内存，导致面板一直显示陈旧的「上次失败」→ 这次双写修复（根因 B）。
+ * 注意：直接写内存 state 不调用 saveState()，避免再次触发 gateDirty 造成循环上传。
+ */
+function recordBackupResult(section, ok, nowIso, errMsg) {
+  const st = state.settings && state.settings[section];
+  if (st) {
+    if (ok) { st.lastBackupAt = nowIso; st.lastError = null; }
+    else { st.lastError = errMsg; }
+  }
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const d = JSON.parse(raw);
+      if (d && d.settings && section && d.settings[section]) {
+        if (ok) { d.settings[section].lastBackupAt = nowIso; d.settings[section].lastError = null; }
+        else { d.settings[section].lastError = errMsg; }
+        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(d));
+      }
+    }
+  } catch (e) { /* 忽略 */ }
+}
+
 /** 执行一次备份：成功记录时间并清零退避；失败按退避计时器自动重试 */
 function runBackupOnce(gate) {
-  // 上传开始后成功或失败都要清掉「待备份」标记：
+  const section = gate.conf.sectionKey;
+  if (backupInFlight[section]) return; // 已有备份在途（并发撞车）→ 跳过本次
+  backupInFlight[section] = true;
   gate.conf.doBackup().then(() => {
-    const section = gate.conf.sectionKey;
+    backupInFlight[section] = false;
     const nowIso = new Date().toISOString();
     backupFlagClear(section); // 上传成功：待备份标记解除
-    // 后台状态更新不触发再次备份（直接写 localStorage 原始 JSON）
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    try {
-      if (raw) {
-        const d = JSON.parse(raw);
-        if (d && d.settings && section && d.settings[section]) {
-          d.settings[section].lastBackupAt = nowIso;
-          d.settings[section].lastError = null;
-          window.localStorage.setItem(STORAGE_KEY, JSON.stringify(d));
-        }
-      }
-    } catch (e) { /* 忽略 */ }
+    recordBackupResult(section, true, nowIso, null); // 内存 + localStorage 双写
     gate.retryIndex = -1;
+    showMiniToast(section === 'gitee' ? '自动备份成功（Gitee）' : '自动备份成功（WebDAV）', 'ok');
   }).catch(err2 => {
+    backupInFlight[section] = false;
     const msg = String(err2 && err2.message ? err2.message : err2);
-    const section = gate.conf.sectionKey;
     backupFlagSet(section); // 上传失败：保留待备份标记（下次打开/回前台会再补备）
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    try {
-      if (raw) {
-        const d = JSON.parse(raw);
-        if (d && d.settings && section && d.settings[section]) {
-          d.settings[section].lastError = msg;
-          window.localStorage.setItem(STORAGE_KEY, JSON.stringify(d));
-        }
-      }
-    } catch (e) { /* 忽略 */ }
+    recordBackupResult(section, false, null, msg); // 内存 + localStorage 双写
     // 指数退避重试：失败后 30s→2min→10min 自动再试，无需等下次改动
     const step = BACKOFF_STEPS_MS[Math.min(gate.retryIndex + 1, BACKOFF_STEPS_MS.length - 1)];
     gate.retryIndex++;
     if (gate.retryTimer) clearTimeout(gate.retryTimer);
     gate.retryTimer = setTimeout(() => { gate.retryTimer = null; runBackupOnce(gate); }, step);
+    showMiniToast(section === 'gitee' ? '自动备份失败（Gitee）：' + msg : '自动备份失败（WebDAV）：' + msg, 'err');
   });
 }
 
@@ -3494,18 +3552,29 @@ function saveGateReal() {
 function catchUpBackup() {
   const run = async () => {
     const outs = [];
-    if (webdavGate.conf.enabled() && backupFlagPending('webdav')) {
-      if (!webdavGate.conf.validate()) {
-        try { await webdavGate.conf.doBackup(); backupFlagClear('webdav'); outs.push('webdav:ok'); }
-        catch (e) { backFlagKeep('webdav'); outs.push('webdav:fail:' + (e && e.message ? e.message : e)); }
-      }
-    }
-    if (giteeGate.conf.enabled() && backupFlagPending('gitee')) {
-      if (!giteeGate.conf.validate()) {
-        try { await giteeGate.conf.doBackup(); backupFlagClear('gitee'); outs.push('gitee:ok'); }
-        catch (e) { backFlagKeep('gitee'); outs.push('gitee:fail:' + (e && e.message ? e.message : e)); }
-      }
-    }
+    // 逐个目标补传（webdav → gitee），成功/失败都同步内存 state 与 localStorage（根因 B 修复）
+    const tryCatchUp = async (gate, label) => {
+      const section = gate.conf.sectionKey;
+      if (!gate.conf.enabled() || !backupFlagPending(section)) return;
+      if (gate.conf.validate()) return; // 未配置完整时静默跳过
+      if (backupInFlight[section]) { outs.push(section + ':busy'); return; } // 与 60s 定时器撞车→跳过
+      backupInFlight[section] = true;
+      try {
+        await gate.conf.doBackup();
+        backupFlagClear(section);
+        recordBackupResult(section, true, new Date().toISOString(), null);
+        showMiniToast('自动备份成功（' + label + '）', 'ok');
+        outs.push(section + ':ok');
+      } catch (e) {
+        backFlagKeep(section);
+        const msg = e && e.message ? e.message : e;
+        recordBackupResult(section, false, null, msg);
+        showMiniToast('自动备份失败（' + label + '）：' + msg, 'err');
+        outs.push(section + ':fail:' + msg);
+      } finally { backupInFlight[section] = false; }
+    };
+    await tryCatchUp(webdavGate, 'WebDAV');
+    await tryCatchUp(giteeGate, 'Gitee');
     return outs;
   };
   return run();
@@ -3539,7 +3608,10 @@ function bindBackupFlush() {
         catchUpBackup();
       }
     });
-    window.addEventListener('pagehide', () => { gateFlush(); setTimeout(() => catchUpBackup(), 0); });
+    // 注意：pagehide 时**不再启动 fetch**——页面卸载期间发起的请求会被浏览器取消，
+    // 产生虚假的「Failed to fetch」错误并被记入 lastError（根因 A）。
+    // 待备份标记已由 gateDirty 持久化到 localStorage，下次打开页面 / 回到前台时
+    // 由 catchUpBackup 补传，无需在卸载瞬间强行上传。
   } catch (e) { /* 无 DOM 环境（单元测试）跳过 */ }
 }
 
@@ -4330,6 +4402,32 @@ function showUndoToast(label) {
   }, 10000);
 }
 
+/* ---------------- 顶部迷你提示条（自动备份等轻量通知） ---------------- */
+let miniToastEl = null;    // 当前显示的迷你提示条
+let miniToastTimer = null; // 自动关闭计时器
+
+/**
+ * 显示一个微小的顶部提示条，3 秒后自动关闭，无需用户点击（类似撤销提示条的轻量版）。
+ * 用于自动备份成功/失败的即时反馈；type 为 'ok'（成功，绿色）或 'err'（失败，红色）。
+ */
+function showMiniToast(text, type) {
+  const old = miniToastEl;
+  if (old && old.parentNode) old.parentNode.removeChild(old);
+  const bar = document.createElement('div');
+  bar.className = 'mini-toast ' + (type === 'err' ? 'err' : 'ok');
+  bar.textContent = text;
+  if (document.body && document.body.appendChild) document.body.appendChild(bar);
+  miniToastEl = bar;
+  if (miniToastTimer) clearTimeout(miniToastTimer);
+  miniToastTimer = setTimeout(() => {
+    if (miniToastEl === bar && bar.parentNode) {
+      bar.parentNode.removeChild(bar);
+      miniToastEl = null;
+    }
+    miniToastTimer = null;
+  }, 3000);
+}
+
 /** 应用撤销：恢复最近一次删除/清空的快照；返回被应用的快照（无则 null） */
 function undoApply() {
   if (!undoSnapshot) return null;
@@ -4391,10 +4489,13 @@ function clearPin() {
 }
 function checkPin(pin) { return !!pin && pinHash(pin) === localStorage.getItem(PIN_HASH_KEY); }
 function pinLocked() { return pinEnabled() && !sessionStorage.getItem('ecocal.pin.unlocked'); }
-function pinLock() { sessionStorage.removeItem('ecocal.pin.unlocked'); const ov = $id('pin-lock'); if (ov) ov.classList.remove('hidden'); }
+function pinLock() { sessionStorage.removeItem('ecocal.pin.unlocked'); const ov = $id('pin-lock'); if (ov) ov.classList.remove('hidden'); lockPageScroll(); }
 function pinUnlock() {
   sessionStorage.setItem('ecocal.pin.unlocked', '1');
   const ov = $id('pin-lock'); if (ov) ov.classList.add('hidden');
+  // PIN 解锁后恢复主页面滚动（若无其它弹窗打开）
+  const backdrop = $id('modal-backdrop');
+  if (!backdrop || backdrop.classList.contains('hidden')) unlockPageScroll();
 }
 
 /** 设置「安全」板块（PIN 锁）——渲染进设置面板的「安全」分区（始终可见） */
@@ -4402,22 +4503,24 @@ function securityHTML() {
   let on = false;
   try { on = pinEnabled(); } catch (e) { /* localStorage 异常时按未启用处理 */ }
   return '<div class="security-box">' +
-    '<div class="field" style="margin-bottom:8px"><label>安全（启动 PIN 锁）</label></div>' +
-    (on
-      ? '<label style="font-size:12px;color:var(--ink-2);display:inline-flex;gap:6px;align-items:center">' +
-          '<input type="checkbox" id="s-pin-toggle" checked> 已开启启动 PIN 锁（启动与切回前台需输入 PIN）</label>' +
-        '<div class="hint" style="margin-top:6px">修改 PIN：取消勾选后输入新 PIN 保存即可重置。</div>'
-      : '<label style="font-size:12px;color:var(--ink-2);display:inline-flex;gap:6px;align-items:center">' +
-          '<input type="checkbox" id="s-pin-toggle"> 启用启动 PIN 锁（启动与切回前台需输入 PIN）</label>') +
-    '<div id="s-pin-setup" style="margin-top:8px">' +
-      '<div class="field"><label>PIN（4~6 位数字）</label>' +
-      '<input id="s-pin" type="password" inputmode="numeric" autocomplete="new-password" maxlength="6" placeholder="如 123456"></div>' +
-      '<div class="field"><label>重置口令（忘记 PIN 时用于解除锁定，请记牢）</label>' +
-      '<input id="s-pin-reset" type="text" autocomplete="off" placeholder="如 my-reset-word"></div>' +
-      '<div class="hint">PIN 只保存在本机浏览器；不会进入备份文件 / 导出内容。忘记 PIN 时在启动遮罩点「忘记 PIN」输入重置口令即可解锁。</div>' +
+    '<div class="bk-card">' +
+      '<div class="bk-card-head">' +
+        '<b class="bk-title">🔒 启动 PIN 锁</b>' +
+        '<label class="switch-row" style="margin-bottom:0"><span>' + (on ? '已开启' : '未开启') + '</span>' +
+          '<span class="switch"><input type="checkbox" id="s-pin-toggle"' + (on ? ' checked' : '') + '><span class="track"></span><span class="thumb"></span></span>' +
+        '</label>' +
+      '</div>' +
+      '<div class="hint" style="margin-bottom:10px">开启后，每次打开页面或从后台切回前台，都需要输入 PIN 才能查看资产数据。</div>' +
+      '<div id="s-pin-setup">' +
+        '<div class="field"><label>PIN（4~6 位数字）</label>' +
+        '<input id="s-pin" type="password" inputmode="numeric" autocomplete="new-password" maxlength="6" placeholder="如 123456"></div>' +
+        '<div class="field"><label>重置口令（忘记 PIN 时用于解除锁定，请记牢）</label>' +
+        '<input id="s-pin-reset" type="text" autocomplete="off" placeholder="如 my-reset-word"></div>' +
+        '<div class="hint">PIN 只保存在本机浏览器，不会进入备份文件 / 导出内容；忘记 PIN 时可在解锁遮罩上用重置口令解除。</div>' +
+      '</div>' +
     '</div>' +
-    '<div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)" class="security-note">' +
-      '<div class="hint">💡 <b>开启 PIN 后</b>：每次启动页面、以及从后台切回前台时，都需要输入 PIN 才能查看数据。请在「保存设置」前填写 PIN 与重置口令；忘记 PIN 时可用重置口令在遮罩上解锁。</div>' +
+    '<div class="hint" style="line-height:1.7">' +
+      '<b>提示：</b>请在「保存设置」前填写 PIN 与重置口令；若已开启想修改 PIN，先关闭开关、重新输入新 PIN 与口令再保存即可。' +
     '</div>' +
   '</div>';
 }
@@ -4650,6 +4753,9 @@ function bindEvents() {
   $id('btn-help').onclick = openHelp;
   $id('btn-export').onclick = openExportModal;
   $id('btn-import').onclick = openImportModal;
+  // 顶栏主题切换按钮：循环切换 跟随系统/浅色/深色
+  const themeBtn = $id('btn-theme');
+  if (themeBtn) { themeBtn.onclick = cycleTheme; updateThemeButton(); }
   $id('import-input').onchange = (e) => {
     const f = e.target.files && e.target.files[0];
     if (f) {
@@ -4891,6 +4997,8 @@ window.__EcoCal = {
   pinHash, pinEnabled, setPin, clearPin, checkPin, pinLock, pinUnlock, pinLocked, securityHTML,
   // 撤销（供测试/调试）
   undoWrap, undoApply, undoSnapshot,
+  // 顶部迷你提示条（供测试/调试）
+  showMiniToast,
   // 导出 Excel（供测试/调试）
   buildXlsxExcel, downloadXlsx,
   // 搜索/排序（供测试/调试）
@@ -4900,7 +5008,7 @@ window.__EcoCal = {
   // 分红/利息/场外现金流（供测试/调试）
   tradeTimelineHTML, assetCardHTML, Calc,
   // 深色模式（供测试/调试）
-  applyTheme, bindThemeListener, bindThemeSettings,
+  applyTheme, bindThemeListener, cycleTheme, updateThemeButton,
 };
 
 })();

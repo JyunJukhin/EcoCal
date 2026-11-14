@@ -1332,6 +1332,73 @@ EcoCal.clearBackupTimers();
   EcoCal.clearBackupTimers();
 }
 
+/* ---- 7.13 自动备份状态双写（v6.6.2 修复：根因 B——补备/自动备份成功也必须更新内存 state） ---- */
+// 旧 bug：catchUpBackup / runBackupOnce 只写 localStorage 原始 JSON、不更新内存 state.settings[section]，
+// 而设置面板 gLast() 读内存 state → 自动备份明明已成功，面板仍显示陈旧的「上次失败：Failed to fetch」。
+{
+  // 7.13.1 补备成功 → 内存 state.settings.gitee 写入 lastBackupAt 并清空 lastError
+  EcoCal.state.settings.gitee = { enabled: true, owner: 'myuser', repo: 'ecocal-backup', path: '', lastBackupAt: null, lastError: 'Failed to fetch' };
+  if (EcoCal.backupFlagSet) EcoCal.backupFlagSet('gitee');
+  const mkFakeOk = () => ({ files: new Map(), fetch: async (url, opts = {}) => {
+    const u = String(url); const method = opts.method || 'GET';
+    if (u.includes('/api/v5/user')) return { ok: true, status: 200, headers: { get: k => (k === 'content-type' ? 'application/json' : null) }, text: () => Promise.resolve('{"login":"myuser"}'), json: () => Promise.resolve({ login: 'myuser' }) };
+    const ci = u.indexOf('/contents/');
+    if (ci !== -1) {
+      const fileKey = decodeURIComponent(u.slice(ci + 10).split('?')[0]);
+      if (method === 'GET') return { ok: false, status: 404, headers: { get: k => null }, text: () => Promise.resolve('{"message":"Not Found"}'), json: () => Promise.resolve({ message: 'Not Found' }) };
+      if (method === 'POST' || method === 'PUT') {
+        // 与真实 Gitee API 一致：保存成功返回 { content: { sha } }
+        return { ok: true, status: method === 'POST' ? 201 : 200, headers: { get: k => (k === 'content-type' ? 'application/json' : null) }, text: () => Promise.resolve('{"content":{"sha":"sha-1"}}'), json: () => Promise.resolve({ content: { sha: 'sha-1' } }) };
+      }
+    }
+    return { ok: false, status: 404, headers: { get: k => null }, text: () => Promise.resolve('{}'), json: () => Promise.resolve({}) };
+  } });
+  const okServer = mkFakeOk();
+  const origFetch4 = globalThis.fetch;
+  globalThis.fetch = okServer.fetch;
+  const outs = await EcoCal.catchUpBackup();
+  assert(outs.length === 1 && outs[0] === 'gitee:ok', '补备状态双写：补备成功（' + JSON.stringify(outs) + '）');
+  const st = EcoCal.state.settings.gitee;
+  assert(st.lastBackupAt !== null && st.lastBackupAt !== undefined, '补备状态双写：成功后内存 lastBackupAt 已写入（根因 B 修复）');
+  assert(st.lastError === null || st.lastError === undefined, '补备状态双写：成功后内存 lastError 已清空（不再显示陈旧「上次失败」）');
+
+  // 7.13.2 补备失败 → 内存 state 同步写入 lastError
+  EcoCal.state.settings.gitee.lastBackupAt = null; EcoCal.state.settings.gitee.lastError = null;
+  if (EcoCal.backupFlagSet) EcoCal.backupFlagSet('gitee');
+  const failing2 = { files: new Map(), fetch: async () => ({ ok: false, status: 401, headers: { get: k => null }, text: () => Promise.resolve('{"message":"无效的令牌"}'), json: () => Promise.resolve({ message: '无效的令牌' }) }) };
+  globalThis.fetch = failing2.fetch;
+  const outsF = await EcoCal.catchUpBackup();
+  assert(outsF.length === 1 && String(outsF[0]).startsWith('gitee:fail'), '补备状态双写：补传失败（' + JSON.stringify(outsF) + '）');
+  assert(String(EcoCal.state.settings.gitee.lastError).length > 0, '补备状态双写：失败后内存 lastError 已同步写入');
+  assert(EcoCal.backupFlagPending ? EcoCal.backupFlagPending('gitee') === true : true, '补备状态双写：失败后保留待备份标记');
+  globalThis.fetch = origFetch4;
+  if (EcoCal.backupFlagClear) EcoCal.backupFlagClear('gitee');
+  EcoCal.state.settings.gitee = { enabled: true, owner: 'myuser', repo: 'ecocal-backup', path: '' };
+  EcoCal.clearBackupTimers();
+}
+
+/* ---- 7.14 顶部迷你提示条（v6.6.2 新增：任务③——自动备份成功/失败微小顶部弹窗，3s 自动关闭） ---- */
+{
+  assert(typeof EcoCal.showMiniToast === 'function', '迷你提示条：showMiniToast 已导出');
+  // 用 makeEl 桩验证：不抛异常（桩环境 createElement 返回无 parentNode 的假元素，3s 后静默跳过清理）
+  let threw = false;
+  try { EcoCal.showMiniToast('自动备份成功（Gitee）', 'ok'); } catch (e) { threw = true; }
+  assert(!threw, '迷你提示条：成功提示调用不抛异常');
+  try { EcoCal.showMiniToast('自动备份失败：网络错误', 'err'); } catch (e) { threw = true; }
+  assert(!threw, '迷你提示条：失败提示调用不抛异常');
+}
+
+/* ---- 7.15 设置面板备份页卡片化重排（v6.6.2：任务②——介绍文字收进「详细说明」折叠） ---- */
+{
+  const html = EcoCal.settingsHTML(EcoCal.state.settings);
+  assert(html.includes('class="bk-card"'), '设置面板：备份页使用卡片化布局（.bk-card）');
+  const detailsCount = (html.match(/<details class="bk-details">/g) || []).length;
+  assert(detailsCount >= 3, '设置面板：介绍文字折叠进「详细说明」（至少 3 个 details，实际 ' + detailsCount + '）');
+  assert(html.includes('id="wd-enabled"') && html.includes('id="g-enabled"'), '设置面板：启用开关保留原 id（wd-enabled / g-enabled）');
+  assert(html.includes('id="wd-url"') && html.includes('id="g-owner"') && html.includes('id="rem-days"') && html.includes('id="s-clear"'),
+    '设置面板：全部输入/按钮 id 保留（wd-url / g-owner / rem-days / s-clear）');
+}
+
 /* ---- 8. PIN 锁（安全） ---- */
 // 8.1 哈希与校验
 const h1 = EcoCal.pinHash('1234');
@@ -1356,7 +1423,8 @@ assert(EcoCal.pinEnabled() === false && storage['ecocal.pin.hash'] === undefined
 // 8.4 设置面板「安全」段渲染
 const secHtml = EcoCal.securityHTML();
 assert(secHtml.includes('PIN') && secHtml.includes('s-pin-toggle'), '安全段：含 PIN 开关与输入');
-assert(EcoCal.pinEnabled() === false && secHtml.includes('启用启动 PIN 锁'), '安全段：未启用时显示启用文案');
+assert(EcoCal.pinEnabled() === false && secHtml.includes('未开启'), '安全段：未启用时显示「未开启」');
+assert(secHtml.includes('bk-card') && secHtml.includes('switch'), '安全段：卡片化排布 + switch 开关样式');
 
 /* ---- 9. 撤销（删除/清空可恢复） ---- */
 // 9.0 撤销段需要真实资产：测试环境 demo 数据未注入，此处临时塞一个资产再删除
@@ -1520,9 +1588,9 @@ assert(xlsxClicked, 'Excel：锚点 click 被触发');
   const html = EcoCal.settingsHTML(savedSettings);
   assert(html.includes('class="set-tab on" data-tab="basic"'), '设置页：四 Tab（汇率与行情）已渲染且默认选中');
   assert(html.includes('data-tab="stats"') && html.includes('data-tab="backup"') && html.includes('data-tab="security"'), '设置页：四 Tab（统计/备份/安全）齐备');
-  assert(html.includes('data-tab="appearance"') && html.includes('>外观</button>'), '设置页：外观 Tab 齐备');
+  assert(!html.includes('data-tab="appearance"') && !html.includes('id="s-theme"'), '设置页：外观 Tab 与主题下拉已移除（主题移到顶栏按钮）');
   assert(html.includes('class="settings-section" data-section="basic"') && html.includes('data-section="stats"') && html.includes('data-section="backup"') && html.includes('data-section="security"'), '设置页：四个分区（汇率与行情/统计/备份/安全）齐备');
-  assert(html.includes('data-section="appearance"') && html.includes('id="s-theme"'), '设置页：外观分区与主题下拉存在');
+  assert(!html.includes('data-section="appearance"'), '设置页：外观分区已移除');
   assert(html.includes('class="settings-sec-title"') && html.includes('settings-sections'), '设置页：分区标题与容器存在');
   assert(html.includes('id="rem-enabled"') && html.includes('id="rem-days"'), '设置页：备份提醒开关与天数输入存在');
   assert(html.includes('id="wd-backup"') && html.includes('id="g-backup"'), '设置页：备份分区含 WebDAV 与 Gitee 面板');
@@ -1536,7 +1604,7 @@ assert(xlsxClicked, 'Excel：锚点 click 被触发');
   const savedGEB = document.getElementById;
   const savedQSA = document.querySelectorAll;
   const setEls = {};
-  ['s-base','s-fetch','s-autofetch','s-updated','s-autoquote','s-refresh-all','s-rf','s-liab','s-cap','s-theme',
+  ['s-base','s-fetch','s-autofetch','s-updated','s-autoquote','s-refresh-all','s-rf','s-liab','s-cap',
    'wd-url','wd-user','wd-pass','wd-dir','wd-test','wd-backup','wd-restore','wd-clear-pass','wd-status','wd-enabled',
    'g-owner','g-repo','g-token','g-path','g-test','g-backup','g-restore','g-clear-token','g-status','g-enabled',
    'rem-enabled','rem-days','s-clear','s-pin-toggle','s-pin','s-pin-reset','modal-ok','modal-close','modal-cancel'].forEach(id => {
@@ -1546,17 +1614,17 @@ assert(xlsxClicked, 'Excel：锚点 click 被触发');
   // document.querySelectorAll('.rate-input') → []
   document.querySelectorAll = sel => {
     if (sel === '.rate-input') return [];
-    if (sel === '.set-tab') return [setEls.__tab_basic, setEls.__tab_appearance, setEls.__tab_stats, setEls.__tab_backup, setEls.__tab_security];
-    if (sel === '.settings-section') return [setEls.__sec_basic, setEls.__sec_appearance, setEls.__sec_stats, setEls.__sec_backup, setEls.__sec_security];
+    if (sel === '.set-tab') return [setEls.__tab_basic, setEls.__tab_stats, setEls.__tab_backup, setEls.__tab_security];
+    if (sel === '.settings-section') return [setEls.__sec_basic, setEls.__sec_stats, setEls.__sec_backup, setEls.__sec_security];
     return savedQSA ? savedQSA(sel) : [];
   };
-  ['__tab_basic','__tab_appearance','__tab_stats','__tab_backup','__tab_security'].forEach((k, i) => {
+  ['__tab_basic','__tab_stats','__tab_backup','__tab_security'].forEach((k, i) => {
     setEls[k] = makeEl(k);
-    setEls[k].dataset = { tab: ['basic','appearance','stats','backup','security'][i] };
+    setEls[k].dataset = { tab: ['basic','stats','backup','security'][i] };
   });
-  ['__sec_basic','__sec_appearance','__sec_stats','__sec_backup','__sec_security'].forEach((k, i) => {
+  ['__sec_basic','__sec_stats','__sec_backup','__sec_security'].forEach((k, i) => {
     setEls[k] = makeEl(k);
-    setEls[k].dataset = { section: ['basic','appearance','stats','backup','security'][i] };
+    setEls[k].dataset = { section: ['basic','stats','backup','security'][i] };
   });
   document.getElementById = id => setEls[id] || elements[id] || (elements[id] = makeEl(id));
   const savedGet = globalThis.localStorage.getItem, savedSet = globalThis.localStorage.setItem;
@@ -1573,23 +1641,14 @@ assert(xlsxClicked, 'Excel：锚点 click 被触发');
     assert(backupTab.classList.contains('on'), '设置页：点击后 Tab 高亮切换');
     basicTab.onclick();
     assert(!basicSec.classList.contains('hidden') && backupSec.classList.contains('hidden'), '设置页：切回「汇率与行情」Tab 正常');
-    // 外观：主题下拉 → 立即生效（bindThemeSettings 的 onchange）
-    const themeSel = setEls['s-theme'];
-    themeSel.value = 'dark';
-    themeSel.onchange();
-    assert(EcoCal.state.settings.themeMode === 'dark', '设置页：主题下拉选 dark → settings.themeMode=dark');
-    assert(docElStub.getAttribute('data-theme') === 'dark', '设置页：选 dark → documentElement 带 data-theme="dark"');
-    themeSel.value = 'light';
-    themeSel.onchange();
-    assert(EcoCal.state.settings.themeMode === 'light' && docElStub.getAttribute('data-theme') === null, '设置页：选 light → data-theme 移除');
-    themeSel.value = 'auto';
-    themeSel.onchange();
-    assert(EcoCal.state.settings.themeMode === 'auto', '设置页：选 auto → settings.themeMode=auto');
-    // 外观 Tab 切换
-    const appSec = setEls.__sec_appearance;
-    setEls.__tab_appearance.onclick();
-    assert(!appSec.classList.contains('hidden'), '设置页：点击「外观」Tab → 外观分区显示');
-    basicTab.onclick();
+    // 主题切换已移到顶栏按钮（cycleTheme 循环 跟随系统→浅色→深色），不再在设置面板内
+    assert(EcoCal.state.settings.themeMode === 'auto', '主题：初始为 auto（跟随系统）');
+    assert(EcoCal.cycleTheme() === 'light', '主题：点一次 → light（浅色）');
+    assert(EcoCal.state.settings.themeMode === 'light' && docElStub.getAttribute('data-theme') === null, '主题：light → data-theme 移除');
+    assert(EcoCal.cycleTheme() === 'dark', '主题：再点 → dark（深色）');
+    assert(EcoCal.state.settings.themeMode === 'dark' && docElStub.getAttribute('data-theme') === 'dark', '主题：dark → data-theme="dark"');
+    assert(EcoCal.cycleTheme() === 'auto', '主题：再点 → auto（跟随系统）');
+    assert(EcoCal.state.settings.themeMode === 'auto', '主题：循环回 auto');
     // 备份提醒开关：勾选 → 写入 settings 并保存
     const remEnabled = setEls['rem-enabled'];
     remEnabled.checked = true;

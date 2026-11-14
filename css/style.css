@@ -53,6 +53,7 @@ html[data-theme="dark"] .input-mode{background:#2c2c30}
 html[data-theme="dark"] .modal-header button:hover, html[data-theme="dark"] .tag.alt, html[data-theme="dark"] .asset-actions .btn-mini.ghost{background:rgba(255,255,255,.08)}
 html[data-theme="dark"] .asset-actions .btn-mini.ghost:hover{background:rgba(255,255,255,.14)}
 html[data-theme="dark"] .settings-tip{background:rgba(255,255,255,.06);color:var(--ink-2)}
+html[data-theme="dark"] .bk-details-body{background:rgba(255,255,255,.06);color:var(--ink-2)}
 html[data-theme="dark"] .pin-lock-box input,html[data-theme="dark"] .modal-body textarea{background:#2c2c30;color:var(--ink)}
 html[data-theme="dark"] .badge-sell.locked,html[data-theme="dark"] .badge-sell.partial{background:rgba(255,159,10,.16);color:#ffb340}
 html[data-theme="dark"] .badge-warn{background:rgba(255,159,10,.16);color:#ffb340}
@@ -76,6 +77,20 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 input,select,textarea{font-family:inherit;font-size:14px;color:var(--ink)}
 .hidden{display:none !important}
 
+/* ============ 滚动条（浅色/深色自适应） ============ */
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{
+  background:rgba(0,0,0,.22);border-radius:5px;
+  border:2px solid transparent;background-clip:content-box;
+}
+::-webkit-scrollbar-thumb:hover{background:rgba(0,0,0,.35)}
+html[data-theme="dark"] ::-webkit-scrollbar-thumb{background:rgba(255,255,255,.25)}
+html[data-theme="dark"] ::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.4)}
+/* Firefox：滚动条颜色（滚动条随主题变量切换） */
+*{scrollbar-width:thin;scrollbar-color:rgba(0,0,0,.25) transparent}
+html[data-theme="dark"] *{scrollbar-color:rgba(255,255,255,.3) transparent}
+
 /* ============ 顶部导航 ============ */
 .topbar{
   position:sticky;top:0;z-index:50;
@@ -96,6 +111,7 @@ input,select,textarea{font-family:inherit;font-size:14px;color:var(--ink)}
   padding:1px 8px;border-radius:980px;letter-spacing:0;
 }
 .top-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.btn-theme{padding:8px 12px;font-size:16px;line-height:1}
 
 .btn{
   display:inline-flex;align-items:center;gap:6px;
@@ -466,9 +482,52 @@ html[data-theme="dark"] .filter-bar select{background:#2c2c30;color:var(--ink)}
 .field.invalid input,.field.invalid select{border-color:var(--red)}
 .field.invalid .field-error{display:block}
 
+/* ============ 自定义开关（checkbox 美化：苹果风 switch） ============ */
+/* 隐藏原生 checkbox，用 label 上的伪元素画开关轨道+滑块 */
+.switch-row{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
+  font-size:13px;color:var(--ink);cursor:pointer;user-select:none;
+}
+.switch{
+  position:relative;width:38px;height:23px;flex:0 0 auto;
+}
+.switch input{
+  position:absolute;inset:0;opacity:0;margin:0;cursor:pointer;z-index:1;
+}
+.switch .track{
+  position:absolute;inset:0;border-radius:999px;
+  background:rgba(0,0,0,.16);transition:background .18s ease;
+}
+.switch .thumb{
+  position:absolute;top:2px;left:2px;width:19px;height:19px;border-radius:50%;
+  background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25);
+  transition:transform .18s ease;
+}
+.switch input:checked ~ .track{background:var(--accent)}
+.switch input:checked ~ .thumb{transform:translateX(15px)}
+.switch input:focus-visible ~ .track{box-shadow:0 0 0 3px rgba(0,113,227,.25)}
+/* 深色模式：仅「未勾选」轨道用浅色透明底（勾选态仍用 accent，避免被覆盖成同色） */
+html[data-theme="dark"] .switch input:not(:checked) ~ .track{background:rgba(255,255,255,.2)}
+
 /* 汇率设置表 */
-.rate-row{display:grid;grid-template-columns:1fr 1fr auto;gap:10px;align-items:center;padding:6px 0}
+.rate-row{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+  padding:8px 10px;margin-bottom:8px;
+  border:1px solid var(--line);border-radius:12px;background:#fff;
+}
+.rate-row .rate-name{display:flex;align-items:baseline;gap:6px;min-width:0}
+.rate-row .rate-name b{font-size:14px}
 .rate-row .money{color:var(--ink-3);font-size:12px}
+.rate-row .rate-input-wrap{display:flex;align-items:center;gap:8px}
+.rate-row .rate-input{
+  width:110px;border:1px solid var(--line);border-radius:8px;
+  padding:6px 10px;font-size:13px;outline:none;background:#fff;
+  text-align:right;font-feature-settings:"tnum";
+}
+.rate-row .rate-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(0,113,227,.15)}
+.rate-row .rate-unit{color:var(--ink-3);font-size:11px;white-space:nowrap}
+html[data-theme="dark"] .rate-row{background:#2c2c30}
+html[data-theme="dark"] .rate-row .rate-input{background:#1e1e22;color:var(--ink)}
 .settings-tip{
   background:#f5f5f7;border-radius:12px;padding:10px 14px;font-size:12px;color:var(--ink-2);margin-bottom:12px;
 }
@@ -531,7 +590,12 @@ html[data-theme="dark"] .filter-bar select{background:#2c2c30;color:var(--ink)}
 .undo-toast .btn{background:#fff;color:#2c2c2e;border:none}
 
 /* ============ 设置面板：Tab 切换 + 分区 ============ */
-.settings-tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px;border-bottom:1px solid var(--line);padding-bottom:12px}
+.settings-tabs{
+  display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px;border-bottom:1px solid var(--line);padding-bottom:12px;
+  /* Tab 栏在弹窗内吸顶：设置面板很长，滚动时保持 4 个标签始终可见可切换 */
+  position:sticky;top:-16px;z-index:5;
+  background:var(--card);margin-top:-16px;padding-top:16px;
+}
 .set-tab{background:transparent;border:1px solid var(--line);border-radius:999px;padding:6px 14px;font-size:13px;color:var(--ink-2);cursor:pointer;transition:all .15s}
 .set-tab:hover{border-color:var(--accent);color:var(--accent)}
 .set-tab.on{background:var(--accent);border-color:var(--accent);color:#fff}
@@ -547,6 +611,46 @@ html[data-theme="dark"] .filter-bar select{background:#2c2c30;color:var(--ink)}
 .settings-sec-title::before{content:'';display:block;width:3px;height:13px;border-radius:2px;background:var(--accent)}
 .settings-section .field{margin-bottom:10px}
 
+/* ============ 设置页备份卡片（v6.6.2 重排：介绍文字收进「详细说明」折叠） ============ */
+.bk-card{
+  background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+  padding:16px;margin-bottom:14px;box-shadow:var(--shadow);
+}
+.bk-card-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.bk-title{font-size:14px;font-weight:650;color:var(--ink)}
+.bk-toggle{
+  font-size:12px;color:var(--ink-2);display:inline-flex;gap:6px;align-items:center;
+  cursor:pointer;user-select:none;
+}
+.bk-toggle input{accent-color:var(--accent)}
+.bk-details{margin-bottom:10px}
+.bk-details summary{
+  font-size:12px;color:var(--accent);cursor:pointer;user-select:none;
+  display:inline-flex;align-items:center;gap:4px;
+}
+.bk-details summary::before{content:'▸';transition:transform .15s ease}
+.bk-details[open] summary::before{transform:rotate(90deg)}
+.bk-details-body{
+  margin-top:8px;background:#f5f5f7;border-radius:10px;padding:10px 14px;
+  font-size:12px;color:var(--ink-2);line-height:1.7;
+}
+.bk-actions{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:6px}
+
+/* ============ 顶部迷你提示条（自动备份等轻量通知，3s 自动关闭） ============ */
+.mini-toast{
+  position:fixed;top:16px;left:50%;transform:translateX(-50%);
+  z-index:260;max-width:92vw;font-size:12px;line-height:1.5;
+  color:#fff;border-radius:10px;padding:8px 16px;text-align:center;
+  box-shadow:0 8px 28px rgba(0,0,0,.28);
+  animation:mini-toast-in .25s ease;
+}
+.mini-toast.ok{background:#1d9e49}
+.mini-toast.err{background:#d64545}
+@keyframes mini-toast-in{
+  from{opacity:0;transform:translate(-50%,-8px)}
+  to{opacity:1;transform:translate(-50%,0)}
+}
+
 /* ============ 顶栏次要操作收纳（v6.6 规划：窄屏收起为「⋯」溢出菜单） ============ */
 .top-nav{display:flex;align-items:center;gap:8px}
 .btn-more{display:none} /* 桌面端平铺，不需要「⋯」按钮 */
@@ -561,6 +665,12 @@ html[data-theme="dark"] .filter-bar select{background:#2c2c30;color:var(--ink)}
   }
   .top-nav.open{display:flex}
   .top-nav .btn{justify-content:flex-start;padding:9px 14px}
+}
+
+@media (max-width:640px){
+  .rate-row{flex-direction:column;align-items:stretch;gap:6px}
+  .rate-row .rate-input-wrap{justify-content:space-between}
+  .rate-row .rate-input{width:auto;flex:1}
 }
 
 /* ============ 产品页资产速览条（v6.6 规划：4 项合计，随筛选/数据联动） ============ */
