@@ -804,6 +804,69 @@ const sortedOk = st.detail.every((r, i) => i === 0 || (st.detail[i - 1].baseValu
 assert(sortedOk, '明细按市值降序');
 assert(st.detail[0].asset.name.includes('大额存单'), '明细第一行为市值最大的大额存单');
 
+// 5.1c 持仓明细二级菜单：当前持仓 / 已卖出
+// hold（当前持仓）视图：默认显示全部 13 列，仅含仍有持仓的产品
+const holdHtml = EcoCal.detailTableHTML(st, st.base, 'hold');
+assert(holdHtml.includes('标的名称') && holdHtml.includes('浮动盈亏率') && holdHtml.includes('当日盈亏') && holdHtml.includes('占比'), 'hold 视图保留全部 13 列');
+assert(holdHtml.includes('大额存单') && holdHtml.includes('美元现汇'), 'hold 视图含仍有持仓的产品');
+// sold（已卖出）视图：演示数据无清仓产品 → 空态提示
+const soldEmptyHtml = EcoCal.detailTableHTML(st, st.base, 'sold');
+assert(soldEmptyHtml.includes('暂无已卖出记录'), 'sold 视图空态提示「暂无已卖出记录」');
+// 构造一个已清仓的产品（买 100 @10，全卖 @12，无手续费）验证 sold 视图列
+const soldAsset = { id: 'sold-test', name: '已卖出测试股', category: 'stock', subCategory: 'A股', currency: 'CNY', lastPrice: null };
+const soldTrades = [
+  { id: 'st1', assetId: 'sold-test', type: 'buy', date: '2025-01-01', price: 10, quantity: 100, fee: 0 },
+  { id: 'st2', assetId: 'sold-test', type: 'sell', date: '2025-06-01', price: 12, quantity: 100, fee: 0 },
+];
+const stSold = Calc.statistics([soldAsset], soldTrades, EcoCal.state.settings, { liabilities: 0, singleAssetCap: 20 });
+const soldHtml = EcoCal.detailTableHTML(stSold, stSold.base, 'sold');
+assert(soldHtml.includes('已卖出测试股'), 'sold 视图列出已清仓产品');
+assert(soldHtml.includes('已实现盈亏') && soldHtml.includes('回收金额') && soldHtml.includes('持有天数') && soldHtml.includes('交易笔数'), 'sold 视图列：已实现盈亏/回收金额/持有天数/交易笔数');
+assert(soldHtml.includes('200.00'), 'sold 视图已实现盈亏 = 卖出收益 200 元（12−10）×100');
+assert(soldHtml.includes('1,200.00'), 'sold 视图回收金额 = 卖出所得 1,200 元');
+assert(soldHtml.includes('2 笔'), 'sold 视图交易笔数 = 2 笔');
+assert(soldHtml.includes(EcoCal.dayDiff('2025-01-01', EcoCal.todayStr()) + ' 天'), 'sold 视图持有天数 = 从首笔买入到今日');
+const holdSoldHtml = EcoCal.detailTableHTML(stSold, stSold.base, 'hold');
+assert(holdSoldHtml.includes('暂无持仓记录'), 'hold 视图不含已清仓产品 → 空态');
+// 默认 Tab = hold
+assert(EcoCal.statsDetailTab === 'hold', '持仓明细默认 Tab 为「当前持仓」');
+
+// 5.1d 产品卡片紧凑化：操作收进右侧小箭头（toggleOps），面板默认收起
+const opsCardHtml = EcoCal.assetCardHTML(EcoCal.state.assets[0]);
+assert(opsCardHtml.includes('data-action="toggleOps"'), '卡片含右侧小箭头操作按钮（toggleOps）');
+assert(opsCardHtml.includes('class="asset-ops"'), '卡片含操作面板容器（默认收起）');
+assert(!opsCardHtml.includes('asset-ops open'), '操作面板默认收起（无 open 类）');
+assert(opsCardHtml.includes('data-action="addBuy"') && opsCardHtml.includes('data-action="addSell"'), '操作面板保留买入/卖出按钮');
+assert(opsCardHtml.includes('data-action="editAsset"') && opsCardHtml.includes('data-action="deleteAsset"'), '操作面板保留编辑/删除按钮');
+// 展开后的面板（opsOpen 含该资产 id）应带 open 类
+EcoCal.opsOpen.add(EcoCal.state.assets[0].id);
+const opsOpenCardHtml = EcoCal.assetCardHTML(EcoCal.state.assets[0]);
+assert(opsOpenCardHtml.includes('asset-ops open'), 'opsOpen 后操作面板带 open 类');
+assert(opsOpenCardHtml.includes('aria-expanded="true"'), '小箭头 aria-expanded=true');
+EcoCal.opsOpen.delete(EcoCal.state.assets[0].id);
+
+// 5.1e 产品列表表格化：每行一个产品，详情默认收起（6 列指标 + 行尾小箭头）
+EcoCal.renderList();
+const tableHtml = document.getElementById('asset-list').innerHTML;
+assert(tableHtml.includes('asset-list-head'), '产品列表含表头（表格化布局）');
+assert(tableHtml.includes('>产品<') && tableHtml.includes('>数量<') && tableHtml.includes('>成本价<') && tableHtml.includes('>市值<') && tableHtml.includes('>浮动盈亏<') && tableHtml.includes('>总盈亏<'), '表头含产品/数量/成本价/市值/浮动盈亏/总盈亏列');
+assert((tableHtml.match(/class="asset-row"/g) || []).length >= 7, '每个产品渲染为一行（≥7 行演示数据）');
+assert(tableHtml.includes('class="asset-detail"') && !tableHtml.includes('asset-detail open'), '行详情区默认收起');
+const rowHtml = EcoCal.assetCardHTML(EcoCal.state.assets[0]);
+assert(rowHtml.includes('class="asset-row"') && rowHtml.includes('class="asset-cell'), '单行结构 = asset-row + asset-cell');
+assert(rowHtml.includes('class="asset-detail"') && rowHtml.includes('class="asset-figures"'), '详情区保留完整指标');
+// 已清仓徽章：数量为 0 且有过交易时展示「已清仓」
+const soldOutAsset = { id: 'soldout-test', name: '已清仓测试', category: 'stock', subCategory: 'A股', currency: 'CNY', lastPrice: null };
+const beforeTrades = EcoCal.state.trades.length;
+EcoCal.state.trades.push(
+  { id: 'so1', assetId: 'soldout-test', type: 'buy', date: '2025-01-01', price: 10, quantity: 100, fee: 0 },
+  { id: 'so2', assetId: 'soldout-test', type: 'sell', date: '2025-06-01', price: 12, quantity: 100, fee: 0 }
+);
+const soldCardHtml = EcoCal.assetCardHTML(soldOutAsset);
+assert(soldCardHtml.includes('已清仓') && soldCardHtml.includes('badge-sold'), '已清仓产品行显示「已清仓」徽章');
+EcoCal.state.trades.length = beforeTrades;
+EcoCal.opsOpen.delete(soldOutAsset.id);
+
 // 5.2 组合市值走势（纯函数）
 const trendAsset = { id: 'tr1', name: '股票', category: 'stock', subCategory: 'A股', currency: 'CNY',
   principal: 0, quantity: null, startDate: null, note: '', lastPrice: 11 };

@@ -502,6 +502,147 @@ try {
   r = await evaluate(`document.body.style.overflow`);
   check('设置弹窗关闭：主页面滚动恢复（body overflow 还原）', r === '', 'overflow=' + r);
 
+  /* ================= 4f. 统计页持仓明细二级菜单 + 产品卡片操作收进小箭头 ================= */
+  // 统计页：明细区有「当前持仓 / 已卖出」两个二级 Tab
+  await evaluate(`window.__EcoCal.switchTab('stats'); true`);
+  await sleep(300);
+  r = await evaluate(`(() => {
+    const tabs = document.querySelectorAll('#detail-tabs .detail-tab');
+    return {
+      count: tabs.length,
+      labels: Array.from(tabs).map(t => t.textContent.trim()),
+      onTab: document.querySelector('#detail-tabs .detail-tab.on') ? document.querySelector('#detail-tabs .detail-tab.on').dataset.detailTab : null,
+      desc: document.getElementById('detail-desc') ? document.getElementById('detail-desc').textContent : '',
+    };
+  })()`);
+  check('统计页明细：二级菜单「当前持仓/已卖出」存在且默认高亮当前持仓',
+    r.count === 2 && r.labels.indexOf('当前持仓') > -1 && r.labels.indexOf('已卖出') > -1 && r.onTab === 'hold' && r.desc.indexOf('按市值降序') > -1,
+    JSON.stringify(r));
+
+  // 演示数据无已清仓产品 → 切到「已卖出」显示空态
+  await evaluate(`(() => {
+    const sold = document.querySelector('#detail-tabs .detail-tab[data-detail-tab="sold"]');
+    if (sold) sold.click();
+    return true;
+  })()`);
+  await sleep(300);
+  r = await evaluate(`(() => {
+    const table = document.getElementById('detail-table');
+    return {
+      text: table ? table.textContent : '',
+      desc: document.getElementById('detail-desc') ? document.getElementById('detail-desc').textContent : '',
+      onTab: document.querySelector('#detail-tabs .detail-tab.on') ? document.querySelector('#detail-tabs .detail-tab.on').dataset.detailTab : null,
+    };
+  })()`);
+  check('统计页明细：切到「已卖出」→ 空态提示（演示数据无清仓产品）',
+    r.onTab === 'sold' && r.text.indexOf('暂无已卖出记录') > -1, JSON.stringify(r));
+
+  // 切回「当前持仓」→ 明细表恢复 13 列数据
+  await evaluate(`(() => {
+    const hold = document.querySelector('#detail-tabs .detail-tab[data-detail-tab="hold"]');
+    if (hold) hold.click();
+    return true;
+  })()`);
+  await sleep(300);
+  r = await evaluate(`(() => {
+    const table = document.getElementById('detail-table');
+    return { text: table ? table.textContent : '', onTab: document.querySelector('#detail-tabs .detail-tab.on') ? document.querySelector('#detail-tabs .detail-tab.on').dataset.detailTab : null };
+  })()`);
+  check('统计页明细：切回「当前持仓」→ 明细表恢复（含 标的名称/大额存单）',
+    r.onTab === 'hold' && r.text.indexOf('标的名称') > -1 && r.text.indexOf('大额存单') > -1, JSON.stringify(r));
+
+  // 产品页：卡片操作集成到右侧小箭头，点击展开/再点收起
+  await evaluate(`window.__EcoCal.switchTab('assets'); true`);
+  await sleep(300);
+  r = await evaluate(`(() => {
+    const card = document.querySelector('.asset-card');
+    const toggle = card ? card.querySelector('.asset-ops-toggle') : null;
+    const ops = card ? card.querySelector('.asset-ops') : null;
+    return {
+      hasCard: !!card,
+      hasToggle: !!toggle,
+      toggleText: toggle ? toggle.textContent.trim() : '',
+      opsExists: !!ops,
+      opsOpen: ops ? ops.classList.contains('open') : false,
+    };
+  })()`);
+  check('产品卡片：右侧小箭头存在、操作面板容器存在且默认收起',
+    r.hasCard === true && r.hasToggle === true && r.toggleText === '⋯' && r.opsExists === true && r.opsOpen === false,
+    JSON.stringify(r));
+
+  await evaluate(`(() => {
+    const toggle = document.querySelector('.asset-card .asset-ops-toggle');
+    if (toggle) toggle.click();
+    return true;
+  })()`);
+  await sleep(300);
+  r = await evaluate(`(() => {
+    const ops = document.querySelector('.asset-card .asset-ops');
+    const btns = ops ? Array.from(ops.querySelectorAll('button')).map(b => b.dataset.action) : [];
+    return { opsOpen: ops ? ops.classList.contains('open') : false, btns };
+  })()`);
+  check('点击小箭头：操作面板展开（含买入/卖出/编辑/删除等按钮）',
+    r.opsOpen === true && r.btns.indexOf('addBuy') > -1 && r.btns.indexOf('addSell') > -1 && r.btns.indexOf('editAsset') > -1 && r.btns.indexOf('deleteAsset') > -1,
+    JSON.stringify(r));
+
+  await evaluate(`(() => {
+    const toggle = document.querySelector('.asset-card .asset-ops-toggle');
+    if (toggle) toggle.click();
+    return true;
+  })()`);
+  await sleep(300);
+  r = await evaluate(`(() => {
+    const ops = document.querySelector('.asset-card .asset-ops');
+    return ops ? ops.classList.contains('open') : true;
+  })()`);
+  check('再次点击小箭头：操作面板收起', r === false, JSON.stringify(r));
+
+  /* ================= 4g. 产品列表表格化紧凑布局 ================= */
+  r = await evaluate(`(() => {
+    const head = document.querySelector('#asset-list .asset-list-head');
+    const rows = document.querySelectorAll('#asset-list .asset-card');
+    const cells = rows.length ? rows[0].querySelectorAll('.asset-row > .asset-cell').length : 0;
+    const rowH = rows.length ? rows[0].querySelector('.asset-row').offsetHeight : 0;
+    return { hasHead: !!head, headText: head ? head.textContent.trim() : '', rows: rows.length, cells, rowH };
+  })()`);
+  check('产品列表：表格化表头存在（产品/数量/成本价/现价/市值/浮动盈亏/总盈亏）',
+    r.hasHead === true && r.headText.indexOf('产品') > -1 && r.headText.indexOf('数量') > -1 && r.headText.indexOf('浮动盈亏') > -1 && r.headText.indexOf('总盈亏') > -1,
+    JSON.stringify(r));
+  check('产品列表：每个产品一行、每行 7 个单元格（名称 + 6 项指标）', r.rows >= 7 && r.cells === 7, JSON.stringify(r));
+  check('产品列表：单行高度紧凑（≤72px，远低于旧卡片高度）', r.rowH > 0 && r.rowH <= 72, 'rowH=' + r.rowH);
+
+  // 展开某一行：详情区出现完整指标与操作按钮
+  await evaluate(`(() => {
+    const toggle = document.querySelector('#asset-list .asset-card .asset-ops-toggle');
+    if (toggle) toggle.click();
+    return true;
+  })()`);
+  await sleep(300);
+  r = await evaluate(`(() => {
+    const card = document.querySelector('#asset-list .asset-card');
+    const detail = card ? card.querySelector('.asset-detail') : null;
+    return {
+      detailOpen: detail ? detail.classList.contains('open') : false,
+      hasFigures: detail ? !!detail.querySelector('.asset-figures') : false,
+      figLabels: detail ? detail.querySelector('.asset-figures').textContent : '',
+      hasNoteMeta: detail ? !!detail.querySelector('.asset-meta') : false,
+    };
+  })()`);
+  check('展开行：详情区展开并显示完整指标（持仓金额/持仓数量 + 浮动盈亏）',
+    r.detailOpen === true && r.hasFigures === true &&
+    (r.figLabels.indexOf('持仓金额') > -1 || r.figLabels.indexOf('持仓数量') > -1) &&
+    r.figLabels.indexOf('浮动盈亏') > -1 && r.hasNoteMeta === true,
+    JSON.stringify(r));
+  await evaluate(`(() => {
+    const toggle = document.querySelector('#asset-list .asset-card .asset-ops-toggle');
+    if (toggle) toggle.click();
+    return true;
+  })()`);
+  await sleep(200);
+
+  await evaluate(`window.__EcoCal.switchTab('stats'); true`);
+  await sleep(200);
+
   /* ================= 5. 无 JS 异常 ================= */
   check('运行期间无未捕获 JS 异常', jsErrors === 0, 'errors=' + jsErrors);
 

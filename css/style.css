@@ -43,15 +43,21 @@ html[data-theme="dark"] .conc-card{background:rgba(255,255,255,.06)}
 html[data-theme="dark"] .detail-table th{background:rgba(255,255,255,.06)}
 html[data-theme="dark"] .detail-table tbody tr{border-bottom:1px solid rgba(255,255,255,.06)}
 html[data-theme="dark"] .detail-table tbody tr:hover{background:rgba(10,132,255,.08)}
+html[data-theme="dark"] .detail-tab{color:var(--ink-2)}
+html[data-theme="dark"] .detail-tab:hover{border-color:var(--accent);color:var(--accent)}
 html[data-theme="dark"] .dist-track{background:rgba(255,255,255,.1)}
 html[data-theme="dark"] .trend-stats .ts{background:rgba(255,255,255,.06)}
 html[data-theme="dark"] .settings-select, html[data-theme="dark"] select,
 html[data-theme="dark"] .filter-bar select{background:#2c2c30;color:var(--ink)}
 html[data-theme="dark"] input,html[data-theme="dark"] textarea{background:#2c2c30;color:var(--ink);border-color:var(--line)}
+html[data-theme="dark"] .asset-list-head{background:rgba(255,255,255,.04)}
+html[data-theme="dark"] .asset-detail{background:#1e1e22}
 html[data-theme="dark"] .asset-expand{background:#1e1e22}
+html[data-theme="dark"] .asset-row:hover{background:rgba(10,132,255,.08)}
+html[data-theme="dark"] .badge-sold{background:rgba(255,159,10,.16);color:#ffb340}
 html[data-theme="dark"] .input-mode{background:#2c2c30}
-html[data-theme="dark"] .modal-header button:hover, html[data-theme="dark"] .tag.alt, html[data-theme="dark"] .asset-actions .btn-mini.ghost{background:rgba(255,255,255,.08)}
-html[data-theme="dark"] .asset-actions .btn-mini.ghost:hover{background:rgba(255,255,255,.14)}
+html[data-theme="dark"] .modal-header button:hover, html[data-theme="dark"] .tag.alt, html[data-theme="dark"] .asset-ops .btn-mini.ghost{background:rgba(255,255,255,.08)}
+html[data-theme="dark"] .asset-ops .btn-mini.ghost:hover{background:rgba(255,255,255,.14)}
 html[data-theme="dark"] .settings-tip{background:rgba(255,255,255,.06);color:var(--ink-2)}
 html[data-theme="dark"] .bk-details-body{background:rgba(255,255,255,.06);color:var(--ink-2)}
 html[data-theme="dark"] .pin-lock-box input,html[data-theme="dark"] .modal-body textarea{background:#2c2c30;color:var(--ink)}
@@ -295,6 +301,15 @@ html[data-theme="dark"] *{scrollbar-color:rgba(255,255,255,.3) transparent}
 .detail-table .td-name{font-weight:600}
 .detail-table .tnum{font-feature-settings:"tnum"}
 
+/* 持仓明细二级菜单：当前持仓 / 已卖出（胶囊 Tab，同设置面板风格） */
+.detail-tabs{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+.detail-tab{
+  background:transparent;border:1px solid var(--line);border-radius:999px;
+  padding:5px 14px;font-size:13px;color:var(--ink-2);cursor:pointer;transition:all .15s;
+}
+.detail-tab:hover{border-color:var(--accent);color:var(--accent)}
+.detail-tab.on{background:var(--accent);border-color:var(--accent);color:#fff}
+
 /* 组合走势：指标条 */
 .trend-stats{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
 .trend-stats .ts{flex:1;min-width:120px;background:#f5f5f7;border-radius:12px;padding:8px 12px}
@@ -388,33 +403,66 @@ html[data-theme="dark"] .filter-bar select{background:#2c2c30;color:var(--ink)}
 .filter-row-more .sep{flex:1}
 .filter-label{font-size:12px;color:var(--ink-3)}
 
-/* ============ 产品卡片列表 ============ */
-.asset-list{display:flex;flex-direction:column;gap:14px}
-.asset-card{
-  background:var(--card);border-radius:var(--radius);
-  border:1px solid var(--line);box-shadow:var(--shadow);
-  overflow:hidden;
+/* ============ 产品列表（表格化紧凑布局：每行一个产品，操作收进行尾小箭头） ============ */
+.asset-list{
+  background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+  box-shadow:var(--shadow);overflow:hidden;
 }
-.asset-main{padding:18px 20px;display:grid;grid-template-columns:1fr auto;gap:14px;align-items:start}
-.asset-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.asset-name{font-size:17px;font-weight:650;letter-spacing:-.01em}
+.asset-list-head{
+  display:grid;grid-template-columns:minmax(170px,1.7fr) repeat(6,minmax(64px,1fr)) 34px;
+  gap:0 10px;align-items:center;padding:9px 14px;
+  font-size:11px;color:var(--ink-3);background:#fafafa;
+  border-bottom:1px solid var(--line);
+}
+.asset-list-head span{text-align:right;white-space:nowrap}
+.asset-list-head span:first-child{text-align:left}
+.asset-card{background:transparent;border:none;border-bottom:1px solid var(--line);border-radius:0;box-shadow:none}
+.asset-card:last-child{border-bottom:none}
+.asset-row{
+  display:grid;grid-template-columns:minmax(170px,1.7fr) repeat(6,minmax(64px,1fr)) 34px;
+  gap:0 10px;align-items:center;padding:10px 14px;
+}
+.asset-row:hover{background:rgba(0,113,227,.04)}
+.asset-cell{font-size:13px;font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.asset-cell .asset-k{display:none}
+.asset-cell-name{text-align:left;white-space:normal}
+.asset-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.asset-name{font-size:14px;font-weight:650;letter-spacing:-.01em}
+.badge-sold{
+  font-size:10px;font-weight:600;padding:1px 7px;border-radius:980px;
+  background:rgba(255,159,10,.14);color:#b25000;vertical-align:middle;
+}
 .tag{
-  font-size:11px;padding:2px 9px;border-radius:980px;font-weight:500;
+  font-size:11px;padding:2px 8px;border-radius:980px;font-weight:500;
   background:rgba(0,113,227,.08);color:var(--accent);
 }
 .tag.alt{background:rgba(0,0,0,.06);color:var(--ink-2)}
-.asset-meta{font-size:12px;color:var(--ink-3);margin-top:4px;display:flex;gap:10px;flex-wrap:wrap}
-.asset-figures{display:flex;gap:26px;flex-wrap:wrap;margin-top:12px}
+.asset-meta{font-size:12px;color:var(--ink-3);margin-top:3px;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.asset-figures{display:flex;gap:14px;flex-wrap:wrap;margin-top:8px}
 .fig .k{font-size:11px;color:var(--ink-3)}
-.fig .v{font-size:17px;font-weight:650;font-feature-settings:"tnum";margin-top:2px}
-.fig .v.annual{font-size:22px;font-weight:700}
-.asset-actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
-.asset-actions .btn-mini.ghost{background:rgba(0,0,0,.06);color:var(--ink)}
-.asset-actions .btn-mini.ghost:hover{background:rgba(0,0,0,.1)}
+.fig .v{font-size:14px;font-weight:650;font-feature-settings:"tnum";margin-top:1px}
+.fig .v.annual{font-size:19px;font-weight:700}
+/* 行尾小箭头：点击展开详情与操作面板 */
+.asset-ops-toggle{
+  align-self:center;justify-self:end;border:1px solid var(--line);background:transparent;
+  border-radius:8px;width:30px;height:30px;font-size:16px;line-height:1;
+  color:var(--ink-2);cursor:pointer;display:flex;align-items:center;justify-content:center;
+  transition:color .12s ease,border-color .12s ease,background .12s ease;
+}
+.asset-ops-toggle:hover{color:var(--accent);border-color:var(--accent)}
+/* 详情区：默认收起，展开后显示元信息、完整指标与操作按钮 */
+.asset-detail{display:none;border-top:1px dashed var(--line);background:#fafafa;padding:12px 14px}
+.asset-detail.open{display:block}
+.asset-ops{
+  display:none;gap:6px;flex-wrap:wrap;margin-top:10px;
+}
+.asset-ops.open{display:flex}
+.asset-ops .btn-mini.ghost{background:rgba(0,0,0,.06);color:var(--ink)}
+.asset-ops .btn-mini.ghost:hover{background:rgba(0,0,0,.1)}
 .badge-warn{font-size:11px;color:#b25000;background:rgba(255,159,10,.14);padding:2px 8px;border-radius:980px;display:inline-block}
 
 /* 展开区：时间线 + 走势 */
-.asset-expand{border-top:1px solid var(--line);background:#fafafa;padding:18px 20px}
+.asset-expand{border-top:1px solid var(--line);background:#fafafa;padding:12px 14px;margin-top:10px}
 .expand-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;align-items:start}
 @media (max-width:760px){.expand-grid{grid-template-columns:1fr}}
 .timeline{display:flex;flex-direction:column;gap:0}
@@ -566,8 +614,14 @@ html[data-theme="dark"] .rate-row .rate-input{background:#1e1e22;color:var(--ink
 
 /* 响应式 */
 @media (max-width:640px){
-  .asset-main{grid-template-columns:1fr}
-  .asset-actions{justify-content:flex-start}
+  /* 表格化列表在窄屏改为 3 列堆叠：首行名称，其余指标带小标签 */
+  .asset-list-head{display:none}
+  .asset-row{position:relative;grid-template-columns:repeat(3,1fr);gap:8px 10px;padding:12px}
+  .asset-cell-name{grid-column:1/-1;padding-right:36px}
+  .asset-cell{text-align:left;white-space:normal;overflow:visible}
+  .asset-cell .asset-k{display:block;font-size:10px;color:var(--ink-3);margin-bottom:1px}
+  .asset-ops-toggle{position:absolute;top:10px;right:10px;justify-self:auto}
+  .asset-ops{justify-content:flex-start}
   .summary-card .value{font-size:23px}
   .fig .v.annual{font-size:19px}
   .tl-item{grid-template-columns:76px 1fr auto}

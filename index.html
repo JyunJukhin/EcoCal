@@ -108,7 +108,11 @@
 
     <h3 class="stats-sec">持仓明细</h3>
     <section class="card chart-card" id="sec-detail">
-      <div class="chart-head"><h2>持仓明细</h2><span class="chart-desc">按市值降序</span></div>
+      <div class="chart-head"><h2>持仓明细</h2><span class="chart-desc" id="detail-desc">按市值降序</span></div>
+      <div class="detail-tabs" id="detail-tabs" role="tablist">
+        <button type="button" class="detail-tab on" data-detail-tab="hold" role="tab" aria-selected="true">当前持仓</button>
+        <button type="button" class="detail-tab" data-detail-tab="sold" role="tab" aria-selected="false">已卖出</button>
+      </div>
       <div id="detail-table"></div>
     </section>
   </section>

@@ -17,7 +17,7 @@ const STORAGE_KEY = 'ecocal.data.v1';
  * - 主版本：重大架构/功能（v3 多文件、v4 股票交易与行情、v6 交易记录全模式）
  * - 次版本：功能增强（v5 监察表模式与优化、v6.1 统计功能、v6.2 统计页重设计、v6.4 云备份）
  * - 补丁：缺陷修复 */
-const APP_VERSION = '6.6.2';
+const APP_VERSION = '6.6.3';
 
 const CURRENCIES = {
   CNY: { symbol: '¥',  name: '人民币' },
@@ -1083,6 +1083,8 @@ let trendMode = 'dual';        // 组合走势模式：dual / profit / rate / dd
 let trendRange = 'all';        // 走势区间：all / 1m / 3m / 6m / 1y / ytd / custom
 let trendCustom = null;        // 自定义区间 { start, end }（trendRange === 'custom' 时生效）
 let activeTab = 'assets';      // 主界面分页：assets（产品）/ stats（统计）
+let statsDetailTab = 'hold';   // 持仓明细二级菜单：hold（当前持仓）/ sold（已卖出）
+let opsOpen = new Set();       // 产品卡片操作面板展开集合（右侧小箭头切换）
 
 /* ---- 主界面分页切换：产品 / 统计 ---- */
 function switchTab(name) {
@@ -1167,11 +1169,43 @@ function concentrationHTML(st, base) {
   '</div>' + warn;
 }
 
-/** 持仓明细表（按市值降序；无数据时不显示 NaN） */
-function detailTableHTML(st, base) {
-  if (!st.detail.length) return '<div class="chart-empty" style="padding:26px 0">暂无持仓记录</div>';
+/** 持仓明细表（二级菜单：hold 当前持仓 / sold 已卖出；无数据时不显示 NaN） */
+function detailTableHTML(st, base, tab) {
+  tab = tab || statsDetailTab;
+  // hold：当前仍有持仓（数量 > 0）；sold：已全部卖出（数量为 0 且有过交易）
+  const rowsFor = tab === 'sold'
+    ? st.detail.filter(r => r.pos.qty <= 0 && r.pos.hasTrades)
+    : st.detail.filter(r => r.pos.qty > 0);
+  if (!rowsFor.length) {
+    return '<div class="chart-empty" style="padding:26px 0">' + (tab === 'sold' ? '暂无已卖出记录' : '暂无持仓记录') + '</div>';
+  }
+  if (tab === 'sold') {
+    // 已卖出视图：精简列——名称/类别/币种/已实现盈亏（折基准）/回收金额/持有天数/交易笔数
+    const head = ['标的名称', '资产类别', '币种', '已实现盈亏（' + base + '）', '回收金额', '持有天数', '交易笔数'];
+    const rows = rowsFor.map(r => {
+      const a = r.asset;
+      const isFx = a.category === 'fx';
+      const curShow = isFx ? (a.foreignCurrency || 'FX') + '/CNY' : a.currency;
+      const realCls = r.baseRealized == null ? '' : (r.baseRealized >= 0 ? 'money-red' : 'money-green');
+      const realTxt = r.baseRealized != null ? fmtSignedMoney(r.baseRealized, base) : '--';
+      return '<tr>' +
+        '<td class="td-name">' + esc(a.name) + '</td>' +
+        '<td>' + esc(CATEGORIES[a.category] ? CATEGORIES[a.category].label : (a.category || '其他')) + '</td>' +
+        '<td>' + esc(curShow) + '</td>' +
+        '<td class="tnum ' + realCls + '">' + realTxt + '</td>' +
+        '<td class="tnum">' + (r.pos.received > 0 ? fmtMoney(r.pos.received, a.currency) : '--') + '</td>' +
+        '<td class="tnum">' + r.pos.days + ' 天</td>' +
+        '<td class="tnum">' + r.pos.events.length + ' 笔</td>' +
+      '</tr>';
+    }).join('');
+    return '<div class="table-wrap"><table class="detail-table">' +
+      '<thead><tr>' + head.map(h => '<th>' + h + '</th>').join('') + '</tr></thead>' +
+      '<tbody>' + rows + '</tbody></table></div>' +
+      '<div class="hint" style="margin-top:10px;font-size:11px;color:var(--ink-3)">' +
+      '口径：已实现盈亏 = 卖出落袋收益（含分红/利息收入，已折算为基准币种）；回收金额 = 卖出与分红等收到的现金（原币）；持有天数 = 从首笔买入到当前。</div>';
+  }
   const head = ['标的名称', '资产类别', '市场', '币种', '数量', '成本价', '现价', '汇率', '市值', '浮动盈亏', '浮动盈亏率', '当日盈亏', '占比'];
-  const rows = st.detail.map(r => {
+  const rows = rowsFor.map(r => {
     const a = r.asset;
     const isFx = a.category === 'fx';
     const curShow = isFx ? (a.foreignCurrency || 'FX') + '/CNY' : a.currency;
@@ -1256,8 +1290,10 @@ function renderStats() {
   // 集中度
   $id('concentration').innerHTML = concentrationHTML(st, base);
 
-  // 持仓明细表
-  $id('detail-table').innerHTML = detailTableHTML(st, base);
+  // 持仓明细表（二级菜单：当前持仓 / 已卖出）
+  const detailDesc = $id('detail-desc');
+  if (detailDesc) detailDesc.textContent = statsDetailTab === 'sold' ? '已全部卖出的产品（按市值降序）' : '按市值降序';
+  $id('detail-table').innerHTML = detailTableHTML(st, base, statsDetailTab);
 
   // 附加视图：组合走势（多模式）+ 盈亏构成
   renderTrendChart();
@@ -1602,12 +1638,21 @@ function filteredAssets() {
   return list;
 }
 
-/* ---- 产品卡片（v6 统一：所有产品走交易记录口径，按类别区分展示侧重） ---- */
+/* ---- 产品列表表头（表格化紧凑布局：每行一个产品） ---- */
+function assetListHeadHTML() {
+  return '<div class="asset-list-head">' +
+    '<span>产品</span><span>数量</span><span>成本价</span><span>现价</span>' +
+    '<span>市值</span><span>浮动盈亏</span><span>总盈亏</span><span></span>' +
+  '</div>';
+}
+
+/* ---- 产品行（v6 统一：所有产品走交易记录口径，按类别区分展示侧重） ---- */
 function assetCardHTML(asset) {
   const isStock = asset.category === 'stock';
   const isFx = asset.category === 'fx';
   const cat = CATEGORIES[asset.category] || { label: asset.category || '其他' };
   const isExpanded = expanded.has(asset.id);
+  const isOpsOpen = opsOpen.has(asset.id);
   const subTag = asset.subCategory && asset.subCategory !== '其他' ? asset.subCategory : '';
   const m = Calc.tradePosition(asset, state.trades, asset.lastPrice != null ? Number(asset.lastPrice) : null);
 
@@ -1692,31 +1737,52 @@ function assetCardHTML(asset) {
       '</div></div>'
     : '';
 
+  // 操作面板：默认收起，点行尾小箭头展开（按钮 data-action 与事件委托逻辑不变）
+  const opsPanel =
+    '<div class="asset-ops' + (isOpsOpen ? ' open' : '') + '">' +
+      '<button class="btn btn-mini btn-primary" data-action="addBuy">＋ 买入</button>' +
+      '<button class="btn btn-mini ghost" data-action="addSell">− 卖出</button>' +
+      (asset.symbol ? '<button class="btn btn-mini ghost" data-action="refreshQuote">⟳ 刷新行情</button>' : '') +
+      '<button class="btn btn-mini ghost" data-action="manualPrice">' + (isStock ? '✎ 现价' : '✎ 市值') + '</button>' +
+      '<button class="btn btn-mini ghost" data-action="toggleExpand">' + (isExpanded ? '收起记录' : '查看记录') + '</button>' +
+      '<button class="btn btn-mini ghost" data-action="editAsset">编辑</button>' +
+      '<button class="btn btn-mini ghost" data-action="deleteAsset" style="color:var(--red)">删除</button>' +
+    '</div>';
+
+  // 已清仓徽章（数量为 0 且有过交易，与「已卖出」分类口径一致）
+  const soldOut = m.qty <= 0 && m.hasTrades;
+
+  // 紧凑表格行：名称 + 数量/成本价/现价/市值/浮动盈亏/总盈亏 + 行尾小箭头
   return '<div class="asset-card' + (isExpanded ? ' expanded' : '') + '" data-asset-id="' + asset.id + '">' +
-    '<div class="asset-main">' +
-      '<div>' +
+    '<div class="asset-row">' +
+      '<div class="asset-cell asset-cell-name">' +
         '<div class="asset-head">' +
           '<span class="asset-name">' + esc(asset.name) + '</span>' +
+          (soldOut ? '<span class="badge-sold">已清仓</span>' : '') +
           '<span class="tag">' + esc(cat.label) + '</span>' +
-          (subTag ? '<span class="tag alt">' + esc(subTag) + '</span>' : '') +
-          riskTag + tplusTag + currencyTag +
         '</div>' +
-        '<div class="asset-meta">' + sellBadge + metaLine + '</div>' +
-        '<div class="asset-figures">' + figures + '</div>' +
-        (baseHint) + quoteInfo +
-        (asset.note ? '<div class="asset-meta" style="margin-top:2px">备注：' + esc(asset.note) + '</div>' : '') +
       '</div>' +
-      '<div class="asset-actions">' +
-        '<button class="btn btn-mini btn-primary" data-action="addBuy">＋ 买入</button>' +
-        '<button class="btn btn-mini ghost" data-action="addSell">− 卖出</button>' +
-        (asset.symbol ? '<button class="btn btn-mini ghost" data-action="refreshQuote">⟳ 刷新行情</button>' : '') +
-        '<button class="btn btn-mini ghost" data-action="manualPrice">' + (isStock ? '✎ 现价' : '✎ 市值') + '</button>' +
-        '<button class="btn btn-mini ghost" data-action="toggleExpand">' + (isExpanded ? '收起记录' : '查看记录') + '</button>' +
-        '<button class="btn btn-mini ghost" data-action="editAsset">编辑</button>' +
-        '<button class="btn btn-mini ghost" data-action="deleteAsset" style="color:var(--red)">删除</button>' +
-      '</div>' +
+      '<div class="asset-cell"><span class="asset-k">数量</span>' + fmtQty(m.qty) + '</div>' +
+      '<div class="asset-cell"><span class="asset-k">成本价</span>' + (m.qty > 0 ? fmtQty(m.avgCost) : '--') + '</div>' +
+      '<div class="asset-cell"><span class="asset-k">现价</span>' + priceStr(asset) + '</div>' +
+      '<div class="asset-cell"><span class="asset-k">市值</span>' + (m.marketValue != null ? fmtMoney(m.marketValue, asset.currency) : '--') + '</div>' +
+      '<div class="asset-cell ' + floatCls + '"><span class="asset-k">浮动盈亏</span>' + (m.float != null ? fmtSignedMoney(m.float, asset.currency) : '--') + '</div>' +
+      '<div class="asset-cell ' + totalCls + '"><span class="asset-k">总盈亏</span>' + fmtSignedMoney(m.totalProfit, asset.currency) + '</div>' +
+      '<button class="asset-ops-toggle" data-action="toggleOps" title="操作" aria-label="操作" aria-expanded="' + (isOpsOpen ? 'true' : 'false') + '">' +
+        (isOpsOpen ? '✕' : '⋯') +
+      '</button>' +
     '</div>' +
-    expand +
+    // 详情区：元信息 + 完整指标 + 操作按钮 + 记录/走势（默认收起）
+    '<div class="asset-detail' + (isOpsOpen ? ' open' : '') + '">' +
+      '<div class="asset-meta">' + sellBadge + metaLine + currencyTag +
+        (subTag ? '<span class="tag alt">' + esc(subTag) + '</span>' : '') + riskTag + tplusTag +
+      '</div>' +
+      '<div class="asset-figures">' + figures + '</div>' +
+      baseHint + quoteInfo +
+      (asset.note ? '<div class="asset-meta" style="margin-top:2px">备注：' + esc(asset.note) + '</div>' : '') +
+      opsPanel +
+      expand +
+    '</div>' +
   '</div>';
 }
 
@@ -1778,13 +1844,15 @@ function renderAssetSummary() {
 function renderList() {
   const list = filteredAssets();
   const emptyOverall = state.assets.length === 0;
-  $id('asset-list').innerHTML = list.map(assetCardHTML).join('');
+  if (emptyOverall) {
+    $id('asset-list').innerHTML = '';
+  } else if (list.length === 0) {
+    $id('asset-list').innerHTML = '<div style="text-align:center;color:var(--ink-3);padding:40px">当前筛选条件下暂无产品</div>';
+  } else {
+    $id('asset-list').innerHTML = assetListHeadHTML() + list.map(assetCardHTML).join('');
+  }
   $id('empty-state').classList.toggle('hidden', !emptyOverall);
   $id('asset-list').classList.toggle('hidden', emptyOverall);
-  const filterEmpty = !emptyOverall && list.length === 0;
-  if (filterEmpty) {
-    $id('asset-list').innerHTML = '<div class="card" style="text-align:center;color:var(--ink-3);padding:40px">当前筛选条件下暂无产品</div>';
-  }
   renderAssetSummary(); // 资产速览条与列表/筛选联动刷新
 }
 
@@ -4669,6 +4737,15 @@ function bindEvents() {
     btn.onclick = () => switchTab(btn.dataset.tab);
   });
 
+  // 统计页持仓明细二级菜单：当前持仓 / 已卖出
+  document.querySelectorAll('#detail-tabs .detail-tab').forEach(btn => {
+    btn.onclick = () => {
+      statsDetailTab = btn.dataset.detailTab || 'hold';
+      document.querySelectorAll('#detail-tabs .detail-tab').forEach(b => b.classList.toggle('on', b.dataset.detailTab === statsDetailTab));
+      renderStats();
+    };
+  });
+
   // 列表事件委托
   $id('asset-list').addEventListener('click', (e) => {
     const btn = e.target.closest('button[data-action]');
@@ -4715,6 +4792,12 @@ function bindEvents() {
       case 'toggleExpand': {
         if (expanded.has(asset.id)) expanded.delete(asset.id);
         else expanded.add(asset.id);
+        renderList();
+        break;
+      }
+      case 'toggleOps': {
+        if (opsOpen.has(asset.id)) opsOpen.delete(asset.id);
+        else opsOpen.add(asset.id);
         renderList();
         break;
       }
@@ -5007,6 +5090,8 @@ window.__EcoCal = {
   renderAssetSummary, updateStatsNavSpy,
   // 分红/利息/场外现金流（供测试/调试）
   tradeTimelineHTML, assetCardHTML, Calc,
+  // 统计页持仓明细（二级菜单 当前持仓/已卖出，供测试/调试）
+  detailTableHTML, statsDetailTab, opsOpen,
   // 深色模式（供测试/调试）
   applyTheme, bindThemeListener, cycleTheme, updateThemeButton,
 };
