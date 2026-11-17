@@ -1462,6 +1462,143 @@ EcoCal.clearBackupTimers();
     '设置面板：全部输入/按钮 id 保留（wd-url / g-owner / rem-days / s-clear）');
 }
 
+/* ---- 7.16 内容去重：数据未变不重复自动备份（修复「每次打开都自动备份成功」） ---- */
+// 场景复现：开启 Gitee 自动备份后，每次打开应用 init() 都会经 migrateToV6 / 行情刷新触发
+// saveState → gateDirty；此前无条件登记待备份并补传 → 每次打开都弹「自动备份成功」。
+// 修复：云备份内容指纹（剔除汇率/行情等易变字段）与上次成功备份一致时，不登记、不补传。
+{
+  EcoCal.state.settings.gitee = { enabled: true, owner: 'myuser', repo: 'ecocal-backup', path: '', lastBackupAt: null, lastError: null };
+  EcoCal.giteeBackup.setToken('git-secret-token-123'); // validate() 依赖令牌
+  // mock Gitee API：GET 404 → 首次 POST 新建；PUT 更新；writes 计数云端写入次数
+  const mkFakeG16 = () => {
+    const srv = { files: new Map(), writes: 0, fetch: async (url, opts = {}) => {
+      const u = String(url); const method = opts.method || 'GET';
+      if (u.includes('/api/v5/user')) return { ok: true, status: 200, headers: { get: k => (k === 'content-type' ? 'application/json' : null) }, text: () => Promise.resolve('{"login":"myuser"}'), json: () => Promise.resolve({ login: 'myuser' }) };
+      const ci = u.indexOf('/contents/');
+      if (ci !== -1) {
+        const fileKey = decodeURIComponent(u.slice(ci + 10).split('?')[0]);
+        if (method === 'GET') return srv.files.has(fileKey)
+          ? { ok: true, status: 200, headers: { get: k => null }, text: () => Promise.resolve(JSON.stringify({ sha: 'sha-' + fileKey, content: srv.files.get(fileKey) })), json: () => Promise.resolve({ sha: 'sha-' + fileKey, content: srv.files.get(fileKey) }) }
+          : { ok: false, status: 404, headers: { get: k => null }, text: () => Promise.resolve('{"message":"Not Found"}'), json: () => Promise.resolve({ message: 'Not Found' }) };
+        if (method === 'POST' || method === 'PUT') {
+          const body = opts.body ? new URLSearchParams(opts.body) : new URLSearchParams();
+          srv.files.set(fileKey, body.get('content'));
+          srv.writes++;
+          return { ok: true, status: method === 'POST' ? 201 : 200, headers: { get: k => (k === 'content-type' ? 'application/json' : null) }, text: () => Promise.resolve('{"content":{"sha":"sha-' + fileKey + '"}}'), json: () => Promise.resolve({ content: { sha: 'sha-' + fileKey } }) };
+        }
+      }
+      return { ok: false, status: 404, headers: { get: k => null }, text: () => Promise.resolve('{}'), json: () => Promise.resolve({}) };
+    } };
+    return srv;
+  };
+  const srv16 = mkFakeG16();
+  const origFetch16 = globalThis.fetch;
+  globalThis.fetch = srv16.fetch;
+  // 7.11 的精简载荷把 assets 置空——用一块合成资产做「内容改动」的载体，收尾还原
+  const savedAssets16 = EcoCal.state.assets;
+  EcoCal.state.assets = [{ id: 'dedup-asset', name: '去重测试资产', category: 'deposit', currency: 'CNY', lastPrice: 100 }];
+
+  // 第一步：数据真实改动 → saveState 登记待备份；补传成功并记录内容指纹
+  EcoCal.state.assets[0].name = '去重测试资产·改';
+  EcoCal.saveState();
+  assert(EcoCal.backupFlagPending('gitee') === true, '内容去重：数据有改动时 saveState 登记待备份');
+  const outsA = await EcoCal.catchUpBackup();
+  assert(outsA.length === 1 && outsA[0] === 'gitee:ok', '内容去重：改动后补传成功（' + JSON.stringify(outsA) + '）');
+  assert(EcoCal.backupFlagPending('gitee') === false, '内容去重：补传成功后标记清除');
+  assert(srv16.writes === 1, '内容去重：云端写入 1 次');
+
+  // 第二步：内容未变（模拟打开页面时 migrateToV6 / 行情刷新触发的 saveState）→ 不登记、不补传、无写入
+  const w0 = srv16.writes;
+  EcoCal.clearBackupTimers(); // 清掉上一步遗留的 60s 防抖计时器，单独验证 gateDirty 不再登记
+  EcoCal.saveState();
+  assert(EcoCal.backupFlagPending('gitee') === false, '内容去重：内容未变时 saveState 不再登记待备份');
+  EcoCal.gateFlush(); // 无待传 → 不应触发上传
+  await new Promise(r => setTimeout(r, 150));
+  assert(srv16.writes === w0, '内容去重：内容未变时不产生任何云端写入');
+  const outsB = await EcoCal.catchUpBackup(); // 模拟 init() 末尾的补备
+  assert(outsB.length === 0, '内容去重：内容未变时补备跳过（' + JSON.stringify(outsB) + '）');
+  assert(srv16.writes === w0, '内容去重：补备跳过且云端写入仍为 ' + w0);
+
+  // 第三步：内容再次变化 → 重新登记并可补传
+  EcoCal.state.assets[0].name = '去重测试资产·再改';
+  EcoCal.saveState();
+  assert(EcoCal.backupFlagPending('gitee') === true, '内容去重：内容再次变化时重新登记待备份');
+  const outsC = await EcoCal.catchUpBackup();
+  assert(outsC.length === 1 && outsC[0] === 'gitee:ok', '内容去重：再次变化后补传成功（' + JSON.stringify(outsC) + '）');
+  assert(srv16.writes === 2, '内容去重：云端累计写入 2 次（仅真实改动才上传）');
+
+  // 收尾：还原资产列表、清标记、恢复 fetch（并重新持久化，保持 storage 与 state 一致）
+  EcoCal.state.assets = savedAssets16;
+  EcoCal.saveState();
+  EcoCal.backupFlagClear('gitee');
+  EcoCal.state.settings.gitee = { enabled: true, owner: 'myuser', repo: 'ecocal-backup', path: '' };
+  globalThis.fetch = origFetch16;
+  EcoCal.clearBackupTimers();
+}
+
+/* ---- 7.17 统计页板块配置（v6.6.x 新增：显示开关 + 顺序调整，即时生效并持久化） ---- */
+{
+  // 7.17.1 默认配置：5 个板块按默认顺序、全部显示
+  const cfg = EcoCal.state.settings.statsLayout || {};
+  assert(Array.isArray(cfg.order) && cfg.order.length === 5, '板块配置：默认 order 含 5 个板块');
+  assert(cfg.order.join(',') === 'dash-cards,sec-trend,sec-struct,sec-conc,sec-detail', '板块配置：默认顺序与展示顺序一致（' + cfg.order.join(',') + '）');
+  assert(Array.isArray(cfg.hidden) && cfg.hidden.length === 0, '板块配置：默认全部显示');
+
+  // 7.17.2 归一化：乱序/缺失/非法 id 都能修复
+  const norm = EcoCal.statsLayoutNormalize({ order: ['sec-conc', 'bogus-id', 'sec-detail', 'sec-detail'], hidden: ['nope', 'sec-trend'] });
+  assert(norm.order.length === 5 && norm.order.includes('sec-conc') && !norm.order.includes('bogus-id'), '板块配置：归一化去重非法 id 并补齐缺失板块（' + norm.order.join(',') + '）');
+  assert(norm.order[0] === 'sec-conc' && norm.order.indexOf('sec-detail') < norm.order.indexOf('sec-trend'), '板块配置：归一化保留用户给定顺序');
+  assert(norm.hidden.length === 1 && norm.hidden[0] === 'sec-trend', '板块配置：归一化只保留合法隐藏 id');
+  const norm2 = EcoCal.statsLayoutNormalize(null);
+  assert(norm2.order.length === 5 && norm2.hidden.length === 0, '板块配置：空配置归一化为默认全显');
+
+  // 7.17.3 隐藏板块：即时生效 + 持久化到 localStorage
+  const savedOrder = (EcoCal.state.settings.statsLayout || {}).order.slice();
+  EcoCal.setStatsSectionVisible('sec-struct', false);
+  assert((EcoCal.state.settings.statsLayout.hidden || []).includes('sec-struct'), '板块配置：隐藏 sec-struct 后写入 hidden');
+  const storedHidden = JSON.parse(storage['ecocal.data.v1'] || '{}');
+  assert(storedHidden.settings && (storedHidden.settings.statsLayout.hidden || []).includes('sec-struct'), '板块配置：隐藏状态已持久化到 localStorage');
+  EcoCal.setStatsSectionVisible('sec-struct', true);
+  assert(!(EcoCal.state.settings.statsLayout.hidden || []).includes('sec-struct'), '板块配置：重新显示后从 hidden 移除');
+  assert(EcoCal.state.settings.statsLayout.order.join(',') === savedOrder.join(','), '板块配置：开关显隐不影响顺序');
+
+  // 7.17.4 顺序调整：moveStatsSection（一位移动，保留兼容）+ statsLayoutMoveTo（拖动到指定位置）+ statsLayoutSetOrder（拖动提交）
+  assert(EcoCal.moveStatsSection('sec-trend', 'up') === true, '板块配置：sec-trend 上移成功');
+  assert(EcoCal.state.settings.statsLayout.order[0] === 'sec-trend' && EcoCal.state.settings.statsLayout.order[1] === 'dash-cards', '板块配置：上移后顺序正确（' + EcoCal.state.settings.statsLayout.order.join(',') + '）');
+  assert(EcoCal.moveStatsSection('sec-trend', 'up') === false, '板块配置：首个板块再上移被拒绝');
+  assert(EcoCal.moveStatsSection('sec-detail', 'down') === false, '板块配置：末个板块再下移被拒绝');
+  assert(EcoCal.moveStatsSection('sec-detail', 'up') === true, '板块配置：sec-detail 上移成功');
+  assert(EcoCal.state.settings.statsLayout.order[EcoCal.state.settings.statsLayout.order.length - 1] === 'sec-conc', '板块配置：上移后末位为 sec-conc');
+  // 拖动 API：把 dash-cards（此时在第 2 位）移到第 4 位（下标 3）→ 跨过 2 个板块
+  assert(EcoCal.statsLayoutMoveTo('dash-cards', 3) === true, '板块配置：statsLayoutMoveTo 移动成功');
+  assert(EcoCal.state.settings.statsLayout.order.join(',') === 'sec-trend,sec-struct,sec-detail,dash-cards,sec-conc',
+    '板块配置：拖动后顺序正确（' + EcoCal.state.settings.statsLayout.order.join(',') + '）');
+  assert(EcoCal.statsLayoutMoveTo('dash-cards', 3) === false, '板块配置：拖回原位置视为无变化（返回 false，不保存）');
+  assert(EcoCal.statsLayoutMoveTo('bogus', 0) === false, '板块配置：非法 id 移动被拒绝');
+  assert(EcoCal.statsLayoutMoveTo('dash-cards', 99) === true, '板块配置：越界目标位被钳制到末位');
+  assert(EcoCal.state.settings.statsLayout.order[EcoCal.state.settings.statsLayout.order.length - 1] === 'dash-cards', '板块配置：越界钳制后 dash-cards 到末位');
+  // statsLayoutSetOrder（拖动松手按 DOM 顺序提交）：顺序未变返回 false；含非法 id 时过滤并补齐
+  assert(EcoCal.statsLayoutSetOrder(['dash-cards', 'sec-trend', 'sec-struct', 'sec-conc', 'sec-detail']) === true, '板块配置：statsLayoutSetOrder 提交新顺序');
+  assert(EcoCal.state.settings.statsLayout.order.join(',') === 'dash-cards,sec-trend,sec-struct,sec-conc,sec-detail', '板块配置：setOrder 后顺序正确');
+  assert(EcoCal.statsLayoutSetOrder(['dash-cards', 'sec-trend', 'sec-struct', 'sec-conc', 'sec-detail']) === false, '板块配置：setOrder 相同顺序返回 false（不保存）');
+  assert(EcoCal.statsLayoutSetOrder(['sec-trend', 'bogus', 'dash-cards']) === true, '板块配置：setOrder 过滤非法 id 并补齐');
+  assert(EcoCal.state.settings.statsLayout.order.join(',') === 'sec-trend,dash-cards,sec-struct,sec-conc,sec-detail', '板块配置：setOrder 过滤补齐后顺序正确');
+  // 收尾：还原默认布局并持久化（同时清掉 gateDirty 留下的防抖计时器）
+  EcoCal.state.settings.statsLayout = { order: ['dash-cards', 'sec-trend', 'sec-struct', 'sec-conc', 'sec-detail'], hidden: [] };
+  EcoCal.saveState();
+  EcoCal.clearBackupTimers();
+
+  // 7.17.5 设置面板渲染：统计页含板块配置列表（5 行，每行有显示开关 + 拖动手柄，无箭头按钮）
+  const statsHtml = EcoCal.settingsHTML(EcoCal.state.settings);
+  assert(statsHtml.includes('id="stats-layout-list"'), '设置面板：统计页包含板块配置列表');
+  const rowCount = (statsHtml.match(/class="stats-layout-row"/g) || []).length;
+  assert(rowCount === 5, '设置面板：板块配置行数 = 5（实际 ' + rowCount + '）');
+  assert((statsHtml.match(/data-stats-vis="/g) || []).length === 5, '设置面板：每行含显示开关（5 个）');
+  assert((statsHtml.match(/data-stats-id="/g) || []).length === 5, '设置面板：每行带板块 id（data-stats-id，5 个）');
+  assert((statsHtml.match(/class="stats-layout-grip"/g) || []).length === 5, '设置面板：每行含拖动手柄（5 个）');
+  assert((statsHtml.match(/data-stats-move=/g) || []).length === 0, '设置面板：已移除上移/下移箭头按钮');
+}
+
 /* ---- 8. PIN 锁（安全） ---- */
 // 8.1 哈希与校验
 const h1 = EcoCal.pinHash('1234');

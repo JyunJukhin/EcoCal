@@ -289,6 +289,22 @@ try {
   r = await evaluate(`!document.getElementById('top-nav').classList.contains('open')`);
   check('点击页面其它位置关闭菜单', r === true);
 
+  // 移动端产品行精简：7 个单元格中仅 3 个可见（市值/浮动盈亏/总盈亏），
+  // 数量/成本价/现价收进展开区（.sub 隐藏）→ 每行 2 行高（名称行 + 指标行）
+  await sleep(300);
+  r = await evaluate(`(() => {
+    const row = document.querySelector('.asset-row');
+    if (!row) return { error: 'no asset-row' };
+    const cells = Array.from(row.querySelectorAll('.asset-cell'));
+    const visible = cells.filter(c => getComputedStyle(c).display !== 'none');
+    const hidden = cells.filter(c => getComputedStyle(c).display === 'none');
+    const height = row.getBoundingClientRect().height;
+    return { total: cells.length, visible: visible.length, hidden: hidden.length, height: Math.round(height) };
+  })()`);
+  check('窄屏产品行精简：仅 3 个关键指标可见（市值/浮动盈亏/总盈亏；另 3 个次要指标隐藏）',
+    r.total === 7 && r.visible === 4 && r.hidden === 3, JSON.stringify(r));
+  check('窄屏产品行 2 行高（≤110px，修复前 3 行 ~118px）', r.height > 0 && r.height <= 110, JSON.stringify(r));
+
   await send('Emulation.clearDeviceMetricsOverride');
   await sleep(400);
   r = await evaluate(`(() => {
@@ -642,6 +658,180 @@ try {
 
   await evaluate(`window.__EcoCal.switchTab('stats'); true`);
   await sleep(200);
+
+  /* ================= 4h. 统计页板块配置（显示开关 + 长按拖动排序，v6.6.x 新增） ================= */
+  // 打开设置 → 统计页签：板块配置列表 5 行，每行含显示开关与拖动手柄，无箭头按钮
+  await evaluate(`window.__EcoCal.openSettings(); true`);
+  await sleep(300);
+  r = await evaluate(`(() => {
+    const tab = document.querySelector('.set-tab[data-tab="stats"]');
+    if (tab) tab.click();
+    const rows = document.querySelectorAll('#stats-layout-list .stats-layout-row');
+    return {
+      rowCount: rows.length,
+      firstId: rows[0] ? rows[0].dataset.statsId : '',
+      lastId: rows[rows.length - 1] ? rows[rows.length - 1].dataset.statsId : '',
+      checks: document.querySelectorAll('#stats-layout-list input[data-stats-vis]').length,
+      grips: document.querySelectorAll('#stats-layout-list .stats-layout-grip').length,
+      arrows: document.querySelectorAll('#stats-layout-list [data-stats-move]').length,
+    };
+  })()`);
+  check('统计板块配置：列表 5 行（首行仪表盘、末行明细、5 开关、5 手柄、无箭头）',
+    r.rowCount === 5 && r.firstId === 'dash-cards' && r.lastId === 'sec-detail' &&
+    r.checks === 5 && r.grips === 5 && r.arrows === 0,
+    JSON.stringify(r));
+
+  // 开关几何与开/关视觉：这些行嵌在 .field 里，曾因 .field label 的 display:block 盖掉 flex 布局，
+  // 使 .switch 退化为 inline、38×23 失效、轨道宽度为 0（屏幕上只剩一个圆点）。此处守住尺寸与两态配色。
+  r = await evaluate(`(async () => {
+    const row = document.querySelector('#stats-layout-list .stats-layout-row');
+    const sw = row.querySelector('.switch'), track = sw.querySelector('.track'), thumb = sw.querySelector('.thumb'), cb = sw.querySelector('input');
+    const rect = el => { const b = el.getBoundingClientRect(); return Math.round(b.width) + 'x' + Math.round(b.height); };
+    const snap = () => ({ track: getComputedStyle(track).backgroundColor, thumb: getComputedStyle(thumb).backgroundColor });
+    const wait = ms => new Promise(res => setTimeout(res, ms));
+    const on = snap();
+    cb.click(); await wait(260);            // 等 track/thumb 的 .18s 过渡结束再读颜色
+    const off = snap();
+    cb.click(); await wait(260);
+    return { sw: rect(sw), track: rect(track), thumb: rect(thumb), on, off };
+  })()`);
+  check('统计板块配置：开关 38×23、轨道满宽、开/关配色不同',
+    r.sw === '38x23' && r.track === '38x23' && r.thumb === '19x19' &&
+    r.on.track !== r.off.track && r.on.thumb !== r.off.thumb,
+    JSON.stringify(r));
+
+  // 长按拖动：长按首行（核心仪表盘）0.4s 后向下拖到第 2 行位置 → 顺序变为 走势→仪表盘→配置结构→集中度→明细
+  await evaluate(`(async () => {
+    const list = document.getElementById('stats-layout-list');
+    const rows = () => Array.from(list.children);
+    const r0 = rows()[0], r1 = rows()[1];
+    const rect0 = r0.getBoundingClientRect(), rect1 = r1.getBoundingClientRect();
+    const fire = (target, type, y) => target.dispatchEvent(new PointerEvent(type, {
+      pointerId: 7, pointerType: 'touch', bubbles: true, cancelable: true,
+      clientX: rect0.left + 24, clientY: y, button: 0, buttons: type === 'pointerup' ? 0 : 1,
+    }));
+    fire(r0, 'pointerdown', rect0.top + rect0.height / 2);
+    await new Promise(res => setTimeout(res, 500));               // 长按 0.5s（> 0.4s 阈值）触发拖动
+    fire(r0, 'pointermove', rect1.top + rect1.height * 0.8);      // 拖到第 2 行中点下方（即第 3 行之前）
+    await new Promise(res => setTimeout(res, 120));
+    fire(r0, 'pointerup', rect1.top + rect1.height * 0.8);
+    return true;
+  })()`);
+  await sleep(250);
+  r = await evaluate(`(() => {
+    const order = Array.from(document.querySelectorAll('#stats-layout-list .stats-layout-row')).map(el => el.dataset.statsId);
+    const persisted = JSON.parse(localStorage.getItem('ecocal.data.v1') || '{}').settings.statsLayout || {};
+    return { order, persistedOrder: persisted.order || [] };
+  })()`);
+  check('统计板块配置：长按拖动后列表顺序更新（走势提到最前）',
+    r.order.join(',') === 'sec-trend,dash-cards,sec-struct,sec-conc,sec-detail' && r.persistedOrder.join(',') === r.order.join(','),
+    JSON.stringify(r));
+
+  // 快速点击（不足长按阈值）不应触发排序：点第 3 行但立刻松手 → 顺序不变
+  await evaluate(`(async () => {
+    const list = document.getElementById('stats-layout-list');
+    const r2 = list.children[2];
+    const rect2 = r2.getBoundingClientRect();
+    const fire = (target, type, y) => target.dispatchEvent(new PointerEvent(type, {
+      pointerId: 8, pointerType: 'touch', bubbles: true, cancelable: true,
+      clientX: rect2.left + 24, clientY: y, button: 0, buttons: type === 'pointerup' ? 0 : 1,
+    }));
+    fire(r2, 'pointerdown', rect2.top + rect2.height / 2);
+    await new Promise(res => setTimeout(res, 100));
+    fire(r2, 'pointerup', rect2.top + rect2.height / 2);
+    return true;
+  })()`);
+  await sleep(150);
+  r = await evaluate(`Array.from(document.querySelectorAll('#stats-layout-list .stats-layout-row')).map(el => el.dataset.statsId).join(',')`);
+  check('统计板块配置：快速点击不触发排序', r === 'sec-trend,dash-cards,sec-struct,sec-conc,sec-detail', r);
+
+  // 隐藏「配置与结构」板块
+  await evaluate(`(() => {
+    const cb = document.querySelector('#stats-layout-list input[data-stats-vis="sec-struct"]');
+    cb.click();
+    return true;
+  })()`);
+  await sleep(200);
+  r = await evaluate(`(() => {
+    const persisted = JSON.parse(localStorage.getItem('ecocal.data.v1') || '{}').settings.statsLayout || {};
+    return { order: persisted.order || [], hidden: persisted.hidden || [] };
+  })()`);
+  check('统计板块配置：隐藏操作已持久化（hidden 含 sec-struct）',
+    r.hidden.indexOf('sec-struct') > -1 && r.order.join(',') === 'sec-trend,dash-cards,sec-struct,sec-conc,sec-detail',
+    JSON.stringify(r));
+
+  await evaluate(`document.getElementById('modal-close').click(); true`);
+  await sleep(250);
+  // 回到统计页：板块顺序 = 配置顺序；被隐藏板块与其标题隐藏；锚点导航同步隐藏
+  r = await evaluate(`(() => {
+    const panel = document.getElementById('panel-stats');
+    const secs = Array.from(panel.children).filter(el => el.tagName === 'SECTION');
+    const order = secs.map(s => s.id);
+    const h3Paired = secs.every(s => s.previousElementSibling && s.previousElementSibling.classList.contains('stats-sec'));
+    const structSec = document.getElementById('sec-struct');
+    const structH3 = structSec ? structSec.previousElementSibling : null;
+    const navItem = document.querySelector('#stats-nav a[data-spy="sec-struct"]');
+    const visibleNav = Array.from(document.querySelectorAll('#stats-nav .stats-nav-item'))
+      .filter(a => getComputedStyle(a).display !== 'none').map(a => a.dataset.spy);
+    return {
+      order, h3Paired,
+      structHidden: structSec ? getComputedStyle(structSec).display === 'none' : null,
+      structH3Hidden: structH3 ? getComputedStyle(structH3).display === 'none' : null,
+      navHidden: navItem ? getComputedStyle(navItem).display === 'none' : null,
+      visibleNav,
+    };
+  })()`);
+  check('统计页：板块按新顺序重排且 h3 标题成对',
+    r.order.join(',') === 'sec-trend,dash-cards,sec-struct,sec-conc,sec-detail' && r.h3Paired === true,
+    JSON.stringify(r));
+  check('统计页：隐藏板块与其标题均不可见',
+    r.structHidden === true && r.structH3Hidden === true, JSON.stringify(r));
+  check('统计页：锚点导航同步隐藏被隐藏板块项',
+    r.navHidden === true && r.visibleNav.join(',') === 'sec-trend,dash-cards,sec-conc,sec-detail',
+    JSON.stringify(r));
+
+  // 还原：重新打开设置 → 恢复显示 sec-struct + 把 sec-trend（现首行）长按拖回第 2 位
+  await evaluate(`window.__EcoCal.openSettings(); true`);
+  await sleep(300);
+  await evaluate(`(() => {
+    const tab = document.querySelector('.set-tab[data-tab="stats"]');
+    if (tab) tab.click();
+    const cb = document.querySelector('#stats-layout-list input[data-stats-vis="sec-struct"]');
+    if (cb && !cb.checked) cb.click();
+    return true;
+  })()`);
+  await sleep(150);
+  await evaluate(`(async () => {
+    const list = document.getElementById('stats-layout-list');
+    const rows = () => Array.from(list.children);
+    const r0 = rows()[0], r1 = rows()[1];
+    const rect0 = r0.getBoundingClientRect(), rect1 = r1.getBoundingClientRect();
+    const fire = (target, type, y) => target.dispatchEvent(new PointerEvent(type, {
+      pointerId: 9, pointerType: 'touch', bubbles: true, cancelable: true,
+      clientX: rect0.left + 24, clientY: y, button: 0, buttons: type === 'pointerup' ? 0 : 1,
+    }));
+    fire(r0, 'pointerdown', rect0.top + rect0.height / 2);
+    await new Promise(res => setTimeout(res, 500));
+    fire(r0, 'pointermove', rect1.top + rect1.height * 0.8);
+    await new Promise(res => setTimeout(res, 120));
+    fire(r0, 'pointerup', rect1.top + rect1.height * 0.8);
+    return true;
+  })()`);
+  await sleep(250);
+  await evaluate(`document.getElementById('modal-close').click(); true`);
+  await sleep(250);
+  r = await evaluate(`(() => {
+    const panel = document.getElementById('panel-stats');
+    const secs = Array.from(panel.children).filter(el => el.tagName === 'SECTION');
+    const order = secs.map(s => s.id);
+    const structVis = getComputedStyle(document.getElementById('sec-struct')).display !== 'none';
+    const navItem = document.querySelector('#stats-nav a[data-spy="sec-struct"]');
+    const navVis = getComputedStyle(navItem).display !== 'none';
+    return { order, structVis, navVis };
+  })()`);
+  check('统计页：还原后顺序与显隐回到默认',
+    r.order.join(',') === 'dash-cards,sec-trend,sec-struct,sec-conc,sec-detail' && r.structVis === true && r.navVis === true,
+    JSON.stringify(r));
 
   /* ================= 5. 无 JS 异常 ================= */
   check('运行期间无未捕获 JS 异常', jsErrors === 0, 'errors=' + jsErrors);

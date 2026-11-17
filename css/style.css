@@ -7,6 +7,7 @@
   --ink-2:#86868b;
   --ink-3:#a1a1a6;
   --line:rgba(0,0,0,.08);
+  --line-strong:rgba(0,0,0,.12);   /* 分隔线加重：产品列表外框与行间分隔 */
   --accent:#0071e3;
   --accent-press:#0077ed;
   --orange:#ff9f0a;   /* 已实现盈亏 / 警示强调（浅色模式） */
@@ -15,6 +16,20 @@
   --radius:18px;
   --shadow:0 1px 2px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.06);
   --font:-apple-system,BlinkMacSystemFont,"SF Pro SC","PingFang SC","Helvetica Neue","Microsoft YaHei",sans-serif;
+  /* 开关（滑块）轨道/滑块配色：开 = accent，关 = 淡紫灰，一眼可辨 */
+  --switch-off-track:#d9d2e3;
+  --switch-off-knob:#b3a9c2;
+  /* 马卡龙色系（明亮粉彩糖果色）：类别标签 / 分布条形 / 辅助曲线 / 环图 */
+  --macaron-blue:#8ec5f0;
+  --macaron-sage:#a8d5a2;
+  --macaron-rose:#f4a7b9;
+  --macaron-mauve:#c3a8e0;
+  --macaron-sand:#f2cf9b;
+  --macaron-teal:#8fd6cf;
+  --macaron-olive:#cdd98a;
+  --macaron-amber:#f6b98a;
+  --macaron-lilac:#d3b7f0;
+  --macaron-gray:#bdb6c4;
 }
 /* 深色模式（跟随系统或手动开启）：覆盖主题变量，其余颜色均引用变量自动适配 */
 html[data-theme="dark"]{
@@ -24,12 +39,27 @@ html[data-theme="dark"]{
   --ink-2:#a8a8b0;
   --ink-3:#7c7c84;
   --line:rgba(255,255,255,.10);
+  --line-strong:rgba(255,255,255,.18);   /* 分隔线加重（深色下更明显） */
   --accent:#0a84ff;
   --accent-press:#3a9bff;
   --orange:#ff9f0a;   /* 已实现盈亏 / 警示强调（深色模式下保持高亮橙） */
   --red:#ff453a;     /* 涨（暗色下更亮） */
   --green:#30d158;   /* 跌（暗色下更亮） */
   --shadow:0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.4);
+  /* 深色下开关关态：更亮的淡紫灰，与开启的 accent 对比明显 */
+  --switch-off-track:rgba(217,210,227,.32);
+  --switch-off-knob:#b3a9c2;
+  /* 马卡龙色系（深色下提亮一档，保证粉彩色在暗底上可读） */
+  --macaron-blue:#a9d3f5;
+  --macaron-sage:#bfe0b8;
+  --macaron-rose:#f7bccb;
+  --macaron-mauve:#d5c0ea;
+  --macaron-sand:#f5ddb3;
+  --macaron-teal:#a9e3dd;
+  --macaron-olive:#dce6a4;
+  --macaron-amber:#f8cca8;
+  --macaron-lilac:#e0c9f5;
+  --macaron-gray:#d3ccd8;
 }
 html[data-theme="dark"] body{background:var(--bg);color:var(--ink)}
 /* 暗色下把硬编码浅底色的元素统一接到变量（保持对比度） */
@@ -53,7 +83,9 @@ html[data-theme="dark"] input,html[data-theme="dark"] textarea{background:#2c2c3
 html[data-theme="dark"] .asset-list-head{background:rgba(255,255,255,.04)}
 html[data-theme="dark"] .asset-detail{background:#1e1e22}
 html[data-theme="dark"] .asset-expand{background:#1e1e22}
-html[data-theme="dark"] .asset-row:hover{background:rgba(10,132,255,.08)}
+html[data-theme="dark"] .asset-row:hover{background:rgba(10,132,255,.10)}
+/* 产品行交替底色：深色下相邻行之间更易辨认（浅色版见 .asset-card:nth-child(even)） */
+html[data-theme="dark"] .asset-card:nth-child(even){background:rgba(255,255,255,.035)}
 html[data-theme="dark"] .badge-sold{background:rgba(255,159,10,.16);color:#ffb340}
 html[data-theme="dark"] .input-mode{background:#2c2c30}
 html[data-theme="dark"] .modal-header button:hover, html[data-theme="dark"] .tag.alt, html[data-theme="dark"] .asset-ops .btn-mini.ghost{background:rgba(255,255,255,.08)}
@@ -68,6 +100,17 @@ html[data-theme="dark"] .tab.active{color:var(--ink)}
 html[data-theme="dark"] .demo-banner{background:linear-gradient(90deg,#12233f,#271a3a)}
 html[data-theme="dark"] .settings-tabs .set-tab{border-color:var(--line);color:var(--ink-2)}
 html[data-theme="dark"] .settings-tabs .set-tab.on{background:var(--accent);border-color:var(--accent);color:#fff}
+/* 类别标签（深色版）：底色提亮、文字用马卡龙色系的浅色调 */
+html[data-theme="dark"] .tag-stock{background:rgba(142,197,240,.22);color:#b9ddf7}
+html[data-theme="dark"] .tag-fund{background:rgba(168,213,162,.22);color:#cbe8c5}
+html[data-theme="dark"] .tag-bond{background:rgba(242,207,155,.24);color:#f2ddb9}
+html[data-theme="dark"] .tag-deposit{background:rgba(205,217,138,.24);color:#e4eab8}
+html[data-theme="dark"] .tag-wealth{background:rgba(244,167,185,.22);color:#f6c6d2}
+html[data-theme="dark"] .tag-insurance{background:rgba(195,168,224,.22);color:#d9c6ee}
+html[data-theme="dark"] .tag-fx{background:rgba(143,214,207,.22);color:#bfe8e2}
+html[data-theme="dark"] .tag-commodity{background:rgba(246,185,138,.24);color:#f7d3b3}
+html[data-theme="dark"] .tag-crypto{background:rgba(211,183,240,.22);color:#e4d3f5}
+html[data-theme="dark"] .tag-other{background:rgba(189,182,196,.20);color:#d5cedb}
 /* 手动「浅色」强制覆盖：清空 html 上的 data-theme 即可回到默认浅色，此处仅作占位说明 */
 html[data-theme="light"]{}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -405,7 +448,7 @@ html[data-theme="dark"] .filter-bar select{background:#2c2c30;color:var(--ink)}
 
 /* ============ 产品列表（表格化紧凑布局：每行一个产品，操作收进行尾小箭头） ============ */
 .asset-list{
-  background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+  background:var(--card);border:1px solid var(--line-strong);border-radius:var(--radius);
   box-shadow:var(--shadow);overflow:hidden;
 }
 .asset-list-head{
@@ -416,7 +459,9 @@ html[data-theme="dark"] .filter-bar select{background:#2c2c30;color:var(--ink)}
 }
 .asset-list-head span{text-align:right;white-space:nowrap}
 .asset-list-head span:first-child{text-align:left}
-.asset-card{background:transparent;border:none;border-bottom:1px solid var(--line);border-radius:0;box-shadow:none}
+.asset-card{background:transparent;border:none;border-bottom:1px solid var(--line-strong);border-radius:0;box-shadow:none}
+/* 交替底色：相邻产品行之间分隔更明显（深色版在 html[data-theme="dark"] 覆盖） */
+.asset-card:nth-child(even){background:rgba(0,0,0,.016)}
 .asset-card:last-child{border-bottom:none}
 .asset-row{
   display:grid;grid-template-columns:minmax(170px,1.7fr) repeat(6,minmax(64px,1fr)) 34px;
@@ -436,6 +481,17 @@ html[data-theme="dark"] .filter-bar select{background:#2c2c30;color:var(--ink)}
   font-size:11px;padding:2px 8px;border-radius:980px;font-weight:500;
   background:rgba(0,113,227,.08);color:var(--accent);
 }
+/* 类别标签：按资产类别分配马卡龙色（明亮粉彩、区分度高），深色版见下方覆盖 */
+.tag-stock{background:rgba(142,197,240,.20);color:#3f7fa8}
+.tag-fund{background:rgba(168,213,162,.22);color:#4c7a45}
+.tag-bond{background:rgba(242,207,155,.24);color:#8a6435}
+.tag-deposit{background:rgba(205,217,138,.24);color:#6d7529}
+.tag-wealth{background:rgba(244,167,185,.22);color:#a05064}
+.tag-insurance{background:rgba(195,168,224,.22);color:#6f549b}
+.tag-fx{background:rgba(143,214,207,.22);color:#2f7a72}
+.tag-commodity{background:rgba(246,185,138,.24);color:#9b5f2c}
+.tag-crypto{background:rgba(211,183,240,.22);color:#7b57a8}
+.tag-other{background:rgba(189,182,196,.20);color:#6a6272}
 .tag.alt{background:rgba(0,0,0,.06);color:var(--ink-2)}
 .asset-meta{font-size:12px;color:var(--ink-3);margin-top:3px;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
 .asset-figures{display:flex;gap:14px;flex-wrap:wrap;margin-top:8px}
@@ -544,18 +600,23 @@ html[data-theme="dark"] .filter-bar select{background:#2c2c30;color:var(--ink)}
 }
 .switch .track{
   position:absolute;inset:0;border-radius:999px;
-  background:rgba(0,0,0,.16);transition:background .18s ease;
+  background:var(--switch-off-track);transition:background .18s ease;
 }
 .switch .thumb{
   position:absolute;top:2px;left:2px;width:19px;height:19px;border-radius:50%;
-  background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25);
-  transition:transform .18s ease;
+  background:var(--switch-off-knob);box-shadow:0 1px 3px rgba(0,0,0,.25);
+  transition:transform .18s ease, background .18s ease;
 }
 .switch input:checked ~ .track{background:var(--accent)}
-.switch input:checked ~ .thumb{transform:translateX(15px)}
+.switch input:checked ~ .thumb{background:#fff;transform:translateX(15px)}
 .switch input:focus-visible ~ .track{box-shadow:0 0 0 3px rgba(0,113,227,.25)}
-/* 深色模式：仅「未勾选」轨道用浅色透明底（勾选态仍用 accent，避免被覆盖成同色） */
-html[data-theme="dark"] .switch input:not(:checked) ~ .track{background:rgba(255,255,255,.2)}
+/* 兜底：设置页「统计」板块的开关行嵌在 .field 里，.field label 的 display:block（0,1,1）
+   会盖掉 .switch-row 的 display:flex（0,1,0），导致 .switch 退化成 inline、38×23 宽高失效，
+   轨道宽度变成 0，屏幕上只剩一个圆点，看不出开/关。这里用更高特异性恢复 flex 布局。 */
+.field .switch-row{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
+  margin-bottom:0;font-size:13px;color:var(--ink);
+}
 
 /* 汇率设置表 */
 .rate-row{
@@ -620,6 +681,9 @@ html[data-theme="dark"] .rate-row .rate-input{background:#1e1e22;color:var(--ink
   .asset-cell-name{grid-column:1/-1;padding-right:36px}
   .asset-cell{text-align:left;white-space:normal;overflow:visible}
   .asset-cell .asset-k{display:block;font-size:10px;color:var(--ink-3);margin-bottom:1px}
+  /* 精简模式：隐藏次要指标（数量/成本价/现价），只保留市值/浮动盈亏/总盈亏 → 每行 2 行高；
+     次要指标在展开区（持仓数量/平均成本/现价/当前市值）中完整可见 */
+  .asset-row .asset-cell.sub{display:none}
   .asset-ops-toggle{position:absolute;top:10px;right:10px;justify-self:auto}
   .asset-ops{justify-content:flex-start}
   .summary-card .value{font-size:23px}
@@ -664,6 +728,30 @@ html[data-theme="dark"] .rate-row .rate-input{background:#1e1e22;color:var(--ink
 }
 .settings-sec-title::before{content:'';display:block;width:3px;height:13px;border-radius:2px;background:var(--accent)}
 .settings-section .field{margin-bottom:10px}
+
+/* ============ 设置页「统计」板块配置（v6.6.x：显隐开关 + 长按拖动排序） ============ */
+.stats-layout-row{
+  display:flex;align-items:center;gap:8px;
+  padding:8px 10px;margin-bottom:8px;
+  background:var(--card);border:1px solid var(--line-strong);border-radius:12px;
+  transition:box-shadow .15s ease, transform .15s ease, border-color .15s ease;
+  user-select:none;-webkit-user-select:none;   /* 长按拖动时避免选中文字 */
+  -webkit-touch-callout:none;                  /* iOS 长按不弹系统菜单，避免打断拖动 */
+}
+.stats-layout-row:last-child{margin-bottom:0}
+.stats-layout-label{font-size:13px;color:var(--ink);line-height:1.35;flex:1}
+/* 拖动手柄：触屏上禁止该小区域的滚动手势，便于长按拖动 */
+.stats-layout-grip{
+  color:var(--ink-3);cursor:grab;font-size:14px;line-height:1;padding:2px 3px;
+  user-select:none;-webkit-user-select:none;touch-action:none;flex-shrink:0;
+}
+/* 拖动中的行：轻微放大浮起，给出明确的"正在拖动"反馈 */
+.stats-layout-row.dragging{
+  cursor:grabbing;opacity:.92;transform:scale(1.02);
+  border-color:var(--accent);box-shadow:0 8px 20px rgba(0,0,0,.16);
+  position:relative;z-index:6;
+}
+html[data-theme="dark"] .stats-layout-row.dragging{box-shadow:0 8px 24px rgba(0,0,0,.5)}
 
 /* ============ 设置页备份卡片（v6.6.2 重排：介绍文字收进「详细说明」折叠） ============ */
 .bk-card{

@@ -17,7 +17,7 @@ const STORAGE_KEY = 'ecocal.data.v1';
  * - 主版本：重大架构/功能（v3 多文件、v4 股票交易与行情、v6 交易记录全模式）
  * - 次版本：功能增强（v5 监察表模式与优化、v6.1 统计功能、v6.2 统计页重设计、v6.4 云备份）
  * - 补丁：缺陷修复 */
-const APP_VERSION = '6.6.3';
+const APP_VERSION = '6.6.4';
 
 const CURRENCIES = {
   CNY: { symbol: '¥',  name: '人民币' },
@@ -84,10 +84,10 @@ function exposureCurrency(asset) {
   return asset.currency || '其他';
 }
 
-/* 苹果风格柔和色板（环图取色） */
-const PALETTE = ['#0071e3', '#bf5af2', '#ff9f0a', '#34c759', '#ff375f', '#64d2ff', '#ac8e68', '#5e5ce6', '#ffd60a', '#8e8e93'];
+/* 马卡龙糖果色板（环图取色；明亮粉彩、糖果感配色） */
+const PALETTE = ['#8ec5f0', '#a8d5a2', '#f4a7b9', '#c3a8e0', '#f2cf9b', '#8fd6cf', '#cdd98a', '#f6b98a', '#d3b7f0', '#bdb6c4'];
 
-/* 风险等级（R1–R5，参考银行理财风险分级）与对应标签色 */
+/* 风险等级（R1–R5，参考银行理财风险分级）与对应标签色（马卡龙糖果色：薄荷绿→青柠→奶油黄→蜜桃橙→糖霜红） */
 const RISK_LEVELS = [
   { key: 'R1', label: 'R1（低风险）' },
   { key: 'R2', label: 'R2（中低风险）' },
@@ -95,7 +95,7 @@ const RISK_LEVELS = [
   { key: 'R4', label: 'R4（中高风险）' },
   { key: 'R5', label: 'R5（高风险）' },
 ];
-const RISK_COLORS = { R1: '#1d9e49', R2: '#34c759', R3: '#ff9f0a', R4: '#ff9500', R5: '#d70015' };
+const RISK_COLORS = { R1: '#52b788', R2: '#90be6d', R3: '#e0a94f', R4: '#e08b5a', R5: '#d4677a' };
 
 /* 排序选项（筛选栏动态生成） */
 const SORT_OPTIONS = [
@@ -209,6 +209,16 @@ function storageRemove() {
   memory = null;
 }
 
+/* 统计页板块：固定 id 与中文名称（数组顺序即默认展示顺序，自上而下） */
+const STATS_SECTION_ORDER = ['dash-cards', 'sec-trend', 'sec-struct', 'sec-conc', 'sec-detail'];
+const STATS_SECTION_LABELS = {
+  'dash-cards': '核心仪表盘（总市值 / 净资产 / 盈亏速览）',
+  'sec-trend': '走势与构成（组合走势 + 盈亏构成）',
+  'sec-struct': '配置与结构（类别 / 市场 / 币种分布）',
+  'sec-conc': '集中度（单一标的上限提示）',
+  'sec-detail': '持仓明细（当前持仓 / 已卖出）',
+};
+
 const DEFAULT_SETTINGS = {
   baseCurrency: 'CNY', rates: {},
   demoDismissed: false,
@@ -249,6 +259,8 @@ const DEFAULT_SETTINGS = {
   },
   // 外观：auto = 跟随系统 / light = 强制浅色 / dark = 强制深色
   themeMode: 'auto',
+  // 统计页板块布局：order = 自上而下展示顺序（id 见 STATS_SECTION_ORDER），hidden = 被隐藏的板块 id
+  statsLayout: { order: STATS_SECTION_ORDER.slice(), hidden: [] },
 };
 
 let state = { assets: [], valuations: [], trades: [], settings: Object.assign({}, DEFAULT_SETTINGS) };
@@ -1103,7 +1115,9 @@ function switchTab(name) {
 function updateStatsNavSpy() {
   if (activeTab !== 'stats') return;
   if (typeof document.querySelectorAll !== 'function') return;
-  const items = document.querySelectorAll('#stats-nav .stats-nav-item');
+  // 跳过被配置隐藏的导航项（applyStatsLayout 会把隐藏板块的导航项置 display:none）
+  const items = Array.from(document.querySelectorAll('#stats-nav .stats-nav-item'))
+    .filter(a => a.style.display !== 'none');
   if (!items.length) return;
   // 判定线 = 视口中线：高亮「中线所在」的章节（顶部越过中线的最后一个章节 = 中线落入的章节），
   // 而不是页面最顶端是什么就高亮什么（吸顶导航悬在顶部，用中线判定更符合阅读位置）
@@ -1141,7 +1155,7 @@ function distributionHTML(items, base, note) {
     const pct = it.pct != null ? Math.round(it.pct * 1000) / 10 : null;
     return '<div class="dist-row">' +
       '<div class="dist-label">' + esc(it.label) + '</div>' +
-      '<div class="dist-track"><div style="width:' + w + '%;background:linear-gradient(90deg,#0a6cff,#4fb0ff)"></div></div>' +
+      '<div class="dist-track"><div style="width:' + w + '%;background:linear-gradient(90deg,var(--macaron-blue),var(--macaron-sage))"></div></div>' +
       '<div class="dist-value">' + fmtMoney(it.value, base) +
         (pct != null ? '<em>' + pct + '%</em>' : '') + '</div>' +
     '</div>';
@@ -1298,6 +1312,140 @@ function renderStats() {
   // 附加视图：组合走势（多模式）+ 盈亏构成
   renderTrendChart();
   $id('profit-chart').innerHTML = profitChartHTML(Calc.summary(state.assets, state.valuations, state.settings, state.trades));
+
+  // 按用户配置应用统计页板块的显隐与顺序（放在内容渲染之后，容器节点无论隐藏与否都先填好内容）
+  applyStatsLayout();
+}
+
+/* ---- 统计页板块配置（settings.statsLayout = { order: [id...], hidden: [id...] }） ---- */
+
+/**
+ * 归一化统计页布局配置：保证 order 只含合法板块 id、不重复、且 5 个板块齐全（缺失补默认序）；
+ * hidden 只保留合法 id。旧数据（无 statsLayout）与异常配置都能安全修复。
+ */
+function statsLayoutNormalize(cfg) {
+  const order = Array.isArray(cfg && cfg.order)
+    ? cfg.order.filter(id => STATS_SECTION_ORDER.includes(id))
+    : [];
+  // 去重（保留首次出现的顺序），再补齐缺失板块
+  const deduped = [];
+  order.forEach(id => { if (!deduped.includes(id)) deduped.push(id); });
+  STATS_SECTION_ORDER.forEach(id => { if (!deduped.includes(id)) deduped.push(id); });
+  const hidden = Array.isArray(cfg && cfg.hidden)
+    ? cfg.hidden.filter(id => STATS_SECTION_ORDER.includes(id))
+    : [];
+  return { order: deduped, hidden };
+}
+
+/**
+ * 应用统计页板块布局：把每个「h3.stats-sec + 紧随的 <section>」按配置顺序重排到面板内，
+ * 同步显隐；顶部锚点导航（#stats-nav）中被隐藏板块对应的导航项一并隐藏。
+ * 无真实 DOM 环境（测试桩）时静默跳过。
+ */
+function applyStatsLayout() {
+  const panel = $id('panel-stats');
+  if (!panel || typeof panel.querySelectorAll !== 'function' || typeof panel.insertBefore !== 'function') return;
+  const norm = statsLayoutNormalize(state.settings.statsLayout);
+  const hiddenSet = new Set(norm.hidden);
+  // 收集板块：每个板块 = h3.stats-sec 与其紧随的 <section>（section 的 id 即板块 id）
+  const blocks = [];
+  panel.querySelectorAll('h3.stats-sec + section').forEach(sec => {
+    const h3 = sec.previousElementSibling;
+    if (h3 && sec.id) blocks.push({ id: sec.id, h3, sec });
+  });
+  const byId = new Map(blocks.map(b => [b.id, b]));
+  const ordered = [];
+  norm.order.forEach(id => { const b = byId.get(id); if (b && !ordered.includes(b)) ordered.push(b); });
+  blocks.forEach(b => { if (!ordered.includes(b)) ordered.push(b); });
+  // 按配置顺序重挂（appendChild 到 fragment 会从原位置移走节点），并同步显隐
+  const frag = document.createDocumentFragment();
+  ordered.forEach(b => {
+    const hidden = hiddenSet.has(b.id);
+    b.h3.style.display = hidden ? 'none' : '';
+    b.sec.style.display = hidden ? 'none' : '';
+    frag.appendChild(b.h3);
+    frag.appendChild(b.sec);
+  });
+  const nav = $id('stats-nav');
+  panel.insertBefore(frag, nav && nav.nextSibling ? nav.nextSibling : null);
+  // 锚点导航同步：隐藏被隐藏板块的导航项，并按配置顺序重排（与页面板块顺序保持一致）
+  if (nav && typeof nav.querySelectorAll === 'function' && typeof nav.appendChild === 'function') {
+    const items = Array.from(nav.querySelectorAll('.stats-nav-item'));
+    const itemById = new Map(items.map(a => [a.dataset ? a.dataset.spy : '', a]));
+    const orderedItems = [];
+    norm.order.forEach(id => { const a = itemById.get(id); if (a && !orderedItems.includes(a)) orderedItems.push(a); });
+    items.forEach(a => { if (!orderedItems.includes(a)) orderedItems.push(a); });
+    orderedItems.forEach(a => {
+      a.style.display = hiddenSet.has(a.dataset ? a.dataset.spy : '') ? 'none' : '';
+      nav.appendChild(a); // 逐项移到末尾，最终顺序 = 配置顺序
+    });
+  }
+}
+
+/** 设置统计页板块可见性（visible=false 即隐藏该板块），即时生效并持久化 */
+function setStatsSectionVisible(id, visible) {
+  if (!STATS_SECTION_ORDER.includes(id)) return;
+  state.settings.statsLayout = statsLayoutNormalize(state.settings.statsLayout);
+  const hidden = state.settings.statsLayout.hidden;
+  const i = hidden.indexOf(id);
+  if (visible) { if (i !== -1) hidden.splice(i, 1); }
+  else if (i === -1) hidden.push(id);
+  saveState();
+  applyStatsLayout();
+}
+
+/** 统计页板块上移/下移一位（dir = 'up' | 'down'），即时生效并持久化；越界返回 false */
+function moveStatsSection(id, dir) {
+  if (!STATS_SECTION_ORDER.includes(id)) return false;
+  state.settings.statsLayout = statsLayoutNormalize(state.settings.statsLayout);
+  const order = state.settings.statsLayout.order;
+  const i = order.indexOf(id);
+  const j = dir === 'up' ? i - 1 : i + 1;
+  if (i < 0 || j < 0 || j >= order.length) return false;
+  [order[i], order[j]] = [order[j], order[i]];
+  saveState();
+  applyStatsLayout();
+  return true;
+}
+
+/** 设置面板「统计」页：板块配置行的 HTML（显示开关 + 长按拖动手柄；整行可长按拖动排序） */
+function statsLayoutRowsHTML(cfg) {
+  const norm = statsLayoutNormalize(cfg);
+  return norm.order.map(id =>
+    '<div class="stats-layout-row" data-stats-id="' + id + '">' +
+      '<span class="stats-layout-grip" aria-hidden="true">⠿</span>' +
+      '<label class="switch-row" style="flex:1;min-width:0">' +
+        '<span class="stats-layout-label">' + esc(STATS_SECTION_LABELS[id] || id) + '</span>' +
+        '<span class="switch"><input type="checkbox" data-stats-vis="' + id + '"' +
+          (norm.hidden.includes(id) ? '' : ' checked') + '><span class="track"></span><span class="thumb"></span></span>' +
+      '</label>' +
+    '</div>'
+  ).join('');
+}
+
+/** 直接设置统计页板块顺序（拖动排序提交用）；顺序未变化返回 false（不触发保存，避免无意义备份登记） */
+function statsLayoutSetOrder(newOrder) {
+  const norm = statsLayoutNormalize(state.settings.statsLayout);
+  const order = (Array.isArray(newOrder) ? newOrder : []).filter(id => STATS_SECTION_ORDER.includes(id));
+  STATS_SECTION_ORDER.forEach(id => { if (!order.includes(id)) order.push(id); });
+  if (order.join(',') === norm.order.join(',')) return false;
+  norm.order = order;
+  state.settings.statsLayout = norm;
+  saveState();
+  applyStatsLayout();
+  return true;
+}
+
+/** 把板块 id 移动到第 targetIndex 位（0 起），返回是否真的发生了顺序变化 */
+function statsLayoutMoveTo(id, targetIndex) {
+  if (!STATS_SECTION_ORDER.includes(id)) return false;
+  const norm = statsLayoutNormalize(state.settings.statsLayout);
+  const i = norm.order.indexOf(id);
+  if (i < 0) return false;
+  const order = norm.order.slice();
+  const [item] = order.splice(i, 1);
+  order.splice(Math.max(0, Math.min(order.length, targetIndex)), 0, item);
+  return statsLayoutSetOrder(order);
 }
 
 /** 盈亏构成卡片（以图为主）：两个迷你环图——浮动 vs 已实现、盈利 vs 亏损 */
@@ -1435,7 +1583,7 @@ function drawBenchmarkLine(benchKey, pts, cutoff, series, firstNet) {
       if (aligned.length < 2) return;
       const benchSeries = {
         points: aligned,
-        color: '#ff9f0a', label: benchmarkLabel(benchKey) + '（%）', dash: true,
+        color: 'var(--macaron-amber)', label: benchmarkLabel(benchKey) + '（%）', dash: true,
       };
       // 组合线存在且图仍是当前对比模式时才重绘（避免越界覆盖其它模式）
       if (firstNet && series.length && trendMode === 'cmp') {
@@ -1759,12 +1907,12 @@ function assetCardHTML(asset) {
         '<div class="asset-head">' +
           '<span class="asset-name">' + esc(asset.name) + '</span>' +
           (soldOut ? '<span class="badge-sold">已清仓</span>' : '') +
-          '<span class="tag">' + esc(cat.label) + '</span>' +
+          '<span class="tag tag-' + asset.category + '">' + esc(cat.label) + '</span>' +
         '</div>' +
       '</div>' +
-      '<div class="asset-cell"><span class="asset-k">数量</span>' + fmtQty(m.qty) + '</div>' +
-      '<div class="asset-cell"><span class="asset-k">成本价</span>' + (m.qty > 0 ? fmtQty(m.avgCost) : '--') + '</div>' +
-      '<div class="asset-cell"><span class="asset-k">现价</span>' + priceStr(asset) + '</div>' +
+      '<div class="asset-cell sub"><span class="asset-k">数量</span>' + fmtQty(m.qty) + '</div>' +
+      '<div class="asset-cell sub"><span class="asset-k">成本价</span>' + (m.qty > 0 ? fmtQty(m.avgCost) : '--') + '</div>' +
+      '<div class="asset-cell sub"><span class="asset-k">现价</span>' + priceStr(asset) + '</div>' +
       '<div class="asset-cell"><span class="asset-k">市值</span>' + (m.marketValue != null ? fmtMoney(m.marketValue, asset.currency) : '--') + '</div>' +
       '<div class="asset-cell ' + floatCls + '"><span class="asset-k">浮动盈亏</span>' + (m.float != null ? fmtSignedMoney(m.float, asset.currency) : '--') + '</div>' +
       '<div class="asset-cell ' + totalCls + '"><span class="asset-k">总盈亏</span>' + fmtSignedMoney(m.totalProfit, asset.currency) + '</div>' +
@@ -2778,6 +2926,11 @@ function settingsHTML(settings) {
         BENCHMARK_INDICES.map(b => '<option value="' + b.key + '"' + ((settings.benchmark || 'sh000300') === b.key ? ' selected' : '') + '>' + b.label + '</option>').join('') +
       '</select>' +
       '<div class="hint">组合走势切换「对比基准」模式时，用该指数做归一化对比。</div></div>' +
+      '<div class="field" style="margin-bottom:4px;border-top:1px solid var(--line);padding-top:14px">' +
+        '<label>统计页板块</label>' +
+        '<div class="hint" style="margin-bottom:8px">可隐藏不需要的板块；<b>长按</b>某一板块约 0.4 秒后拖动，即可调整展示顺序。统计页顶部的锚点导航会同步隐藏并跟随。</div>' +
+        '<div id="stats-layout-list">' + statsLayoutRowsHTML(settings.statsLayout) + '</div>' +
+      '</div>' +
     '</section>' +
     '<section class="settings-section" data-section="backup">' +
       '<h4 class="settings-sec-title">备份</h4>' +
@@ -3132,6 +3285,112 @@ function openSettings() {
   // 首次打开默认停留在「汇率与行情」：应用初始可见性（其余分区隐藏）
   const defaultTab = Array.from(setTabs).find(t => t.classList.contains('on')) || setTabs[0];
   if (defaultTab) defaultTab.onclick();
+
+  /* ---- 统计页板块：显示开关（即时生效）+ 长按拖动排序（替换箭头；列表行由容器委托处理） ---- */
+  const statsLayoutList = $id('stats-layout-list');
+  if (statsLayoutList) {
+    // 长按 400ms 进入拖动模式；拖动中实时重排 DOM 行，松手按当前顺序提交。
+    // 关键点：拖动重排会移动行节点，若把 pointer 监听挂在行上（或对行 setPointerCapture），
+    // 节点被移出原位置时指针捕获会丢失、后续 move/up 不再送达 → 拖动“拖不动”。
+    // 因此统一在 window 上以捕获阶段监听，拖动状态只存在闭包里。
+    let statsDrag = null; // { row, pointerId, startY, timer, dragging }
+    let statsSuppressClickUntil = 0; // 拖动/长按结束后短暂抑制 click，避免误切开关
+    const STATS_LONG_PRESS_MS = 400;
+    const statsDragCleanup = () => {
+      if (!statsDrag) return;
+      const d = statsDrag;
+      if (d.timer) { clearTimeout(d.timer); d.timer = null; }
+      if (d.row) d.row.classList.remove('dragging');
+      window.removeEventListener('pointermove', statsDragOnMove, true);
+      window.removeEventListener('pointerup', statsDragOnEnd, true);
+      window.removeEventListener('pointercancel', statsDragOnCancel, true);
+      statsDrag = null;
+    };
+    // 计算插入参照行：先排除被拖行自身，再找第一个中点低于指针的行；null 表示放到末尾
+    const statsDropRef = (row, clientY) => {
+      const siblings = Array.from(statsLayoutList.children).filter(el => el !== row);
+      for (const el of siblings) {
+        const r = el.getBoundingClientRect();
+        if (clientY < r.top + r.height / 2) return el;
+      }
+      return null;
+    };
+    const statsDragOnMove = e => {
+      const d = statsDrag;
+      if (!d || e.pointerId !== d.pointerId) return;
+      if (!d.dragging) {
+        // 尚未进入拖动：位移超过阈值视为滚动意图，取消长按
+        if (Math.abs(e.clientY - d.startY) > 10) statsDragCleanup();
+        return;
+      }
+      e.preventDefault();
+      const ref = statsDropRef(d.row, e.clientY);
+      // 已在目标位置时不要动 DOM：重复插拔同一节点会让行闪烁，也会触发无意义的重排
+      const alreadyThere = ref
+        ? d.row.nextElementSibling === ref
+        : statsLayoutList.lastElementChild === d.row;
+      if (!alreadyThere) statsLayoutList.insertBefore(d.row, ref);
+    };
+    const statsDragOnEnd = e => {
+      const d = statsDrag;
+      if (!d || (e.pointerId != null && e.pointerId !== d.pointerId)) return;
+      const wasDragging = d.dragging;
+      statsDragCleanup();
+      if (wasDragging) {
+        statsSuppressClickUntil = Date.now() + 600;
+        // 以当前 DOM 顺序提交；随后重渲染列表（节点被替换后，松手产生的 click 不会作用到开关）
+        statsLayoutSetOrder(Array.from(statsLayoutList.children).map(el => el.dataset.statsId));
+        statsLayoutList.innerHTML = statsLayoutRowsHTML(state.settings.statsLayout);
+      }
+    };
+    // 指针被系统取消（如切后台）：放弃本次拖动，按已保存配置恢复列表，不提交顺序
+    const statsDragOnCancel = e => {
+      const d = statsDrag;
+      if (!d || (e.pointerId != null && e.pointerId !== d.pointerId)) return;
+      const wasDragging = d.dragging;
+      statsDragCleanup();
+      if (wasDragging) {
+        statsSuppressClickUntil = Date.now() + 600;
+        statsLayoutList.innerHTML = statsLayoutRowsHTML(state.settings.statsLayout);
+      }
+    };
+    // 阻止触屏在长按拖动期间滚动模态框：监听必须提前注册，等拖动开始再加可能已被滚动抢走
+    statsLayoutList.addEventListener('touchmove', e => {
+      if (statsDrag && statsDrag.dragging) e.preventDefault();
+    }, { passive: false });
+    // 安卓/iOS 长按会弹系统菜单，打断拖动
+    statsLayoutList.addEventListener('contextmenu', e => {
+      if (statsDrag && statsDrag.dragging) e.preventDefault();
+    });
+    // 长按后松手会补发 click：拖动期间抑制，避免误切开关。
+    // e.detail===0 表示脚本触发的 click（如测试里的 cb.click()），不应被拖动后的抑制窗口误伤。
+    statsLayoutList.addEventListener('click', e => {
+      if (Date.now() < statsSuppressClickUntil && e.detail !== 0) {
+        e.preventDefault(); e.stopPropagation();
+      }
+    }, true);
+    statsLayoutList.addEventListener('pointerdown', e => {
+      const row = e.target.closest ? e.target.closest('.stats-layout-row') : null;
+      if (!row || !row.dataset || !row.dataset.statsId) return;
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      statsDragCleanup();
+      const d = { row, pointerId: e.pointerId, startY: e.clientY, dragging: false, timer: null };
+      d.timer = setTimeout(() => {
+        d.timer = null;
+        d.dragging = true;
+        d.row.classList.add('dragging');
+      }, STATS_LONG_PRESS_MS);
+      statsDrag = d;
+      window.addEventListener('pointermove', statsDragOnMove, true);
+      window.addEventListener('pointerup', statsDragOnEnd, true);
+      window.addEventListener('pointercancel', statsDragOnCancel, true);
+    });
+    statsLayoutList.addEventListener('change', e => {
+      const cb = e.target.closest('input[data-stats-vis]');
+      if (!cb) return;
+      setStatsSectionVisible(cb.dataset.statsVis, cb.checked);
+    });
+  }
 
   modalOnOk = () => {
     const base = $id('s-base').value;
@@ -3498,6 +3757,40 @@ function backupFlagPending(section) {
   } catch (e) { return false; }
 }
 
+/** 上次成功备份的内容指纹键（localStorage，按目标 section）：内容未变不重复上传（去重依据） */
+const backupLastFpKey = (section) => 'ecocal.backup.fp.' + section;
+
+/** 读取上次成功备份的内容指纹 */
+function lastBackupFpGet(section) {
+  try { return window.localStorage.getItem(backupLastFpKey(section)) || ''; }
+  catch (e) { return ''; }
+}
+
+/** 记录本次成功上传的内容指纹 */
+function lastBackupFpSet(section, fp) {
+  try { window.localStorage.setItem(backupLastFpKey(section), fp); }
+  catch (e) { /* 隐私模式忽略 */ }
+}
+
+/**
+ * 本地数据内容指纹（与云备份载荷同口径）：剔除汇率/行情等易变字段与备份历史字段，
+ * 同一份数据每次计算恒定 → 用于判断「数据内容是否真的变了」。
+ * 说明：打开页面时 init() 内的 migrateToV6 / 行情刷新都会触发 saveState（进而 gateDirty），
+ * 但内容未变时不应重复自动备份——此前每次打开都「自动备份成功」即由此而来。
+ */
+function cloudPayloadFingerprint() {
+  try {
+    const s = JSON.parse(JSON.stringify(state.settings || {}));
+    ['rates', 'ratesUpdatedAt', 'ratesSource', 'autoFetchRates', 'autoQuote', 'quotes', 'kline'].forEach(k => { delete s[k]; });
+    if (s.webdav) { delete s.webdav.lastBackupAt; delete s.webdav.lastError; }
+    if (s.gitee) { delete s.gitee.lastBackupAt; delete s.gitee.lastError; }
+    const text = JSON.stringify({ assets: state.assets || [], valuations: state.valuations || [], trades: state.trades || [], settings: s });
+    let h = 0;
+    for (let i = 0; i < text.length; i++) h = ((h << 5) - h + text.charCodeAt(i)) | 0;
+    return (h >>> 0).toString(16).padStart(8, '0');
+  } catch (e) { return 'x'; }
+}
+
 /** 统一调度初始参数（WebDAV / Gitee 各一套） */
 function backupGateInit(conf) {
   return { conf, pending: null, retryTimer: null, retryIndex: -1 };
@@ -3523,6 +3816,12 @@ function gateDirty(gate, payloadFn) {
   if (!gate.conf.enabled()) return;
   const err = gate.conf.validate();
   if (err) return; // 未配置完整时静默跳过
+  // 内容去重：本次数据与上次成功备份完全一致（如打开页面时行情刷新触发的 saveState）→
+  // 不登记待备份，并顺手清掉可能残留的旧标记；只有数据真变了才进入备份流程。
+  if (cloudPayloadFingerprint() === lastBackupFpGet(gate.conf.sectionKey)) {
+    backupFlagClear(gate.conf.sectionKey);
+    return;
+  }
   backupFlagSet(gate.conf.sectionKey);
   if (gate.retryTimer) { clearTimeout(gate.retryTimer); gate.retryTimer = null; gate.retryIndex = -1; }
   if (gate.pending) clearTimeout(gate.pending.timer);
@@ -3571,12 +3870,19 @@ function recordBackupResult(section, ok, nowIso, errMsg) {
       }
     }
   } catch (e) { /* 忽略 */ }
+  if (ok) lastBackupFpSet(section, cloudPayloadFingerprint()); // 记录本次成功上传的内容指纹（后续去重依据）
 }
 
 /** 执行一次备份：成功记录时间并清零退避；失败按退避计时器自动重试 */
 function runBackupOnce(gate) {
   const section = gate.conf.sectionKey;
   if (backupInFlight[section]) return; // 已有备份在途（并发撞车）→ 跳过本次
+  // 内容去重（入口兜底）：此刻数据与上次成功备份一致（可能已由其它路径传过）→ 直接跳过本次上传
+  if (cloudPayloadFingerprint() === lastBackupFpGet(section)) {
+    backupFlagClear(section);
+    gate.retryIndex = -1;
+    return;
+  }
   backupInFlight[section] = true;
   gate.conf.doBackup().then(() => {
     backupInFlight[section] = false;
@@ -3733,6 +4039,7 @@ async function manualWebdavBackup() {
     const text = await webdavBackup.backup();
     state.settings.webdav.lastBackupAt = new Date().toISOString();
     state.settings.webdav.lastError = null;
+    lastBackupFpSet('webdav', cloudPayloadFingerprint()); // 记录成功指纹：紧随的 saveState 不会再重复登记待备份
     saveState(); // 持久化备份时间
     return { ok: true, size: text.length };
   } catch (e) {
@@ -3925,6 +4232,7 @@ async function manualGiteeBackup() {
     const text = await giteeBackup.backup();
     state.settings.gitee.lastBackupAt = new Date().toISOString();
     state.settings.gitee.lastError = null;
+    lastBackupFpSet('gitee', cloudPayloadFingerprint()); // 记录成功指纹：紧随的 saveState 不会再重复登记待备份
     saveState(); // 持久化备份时间
     return { ok: true, size: text.length };
   } catch (e) {
@@ -5074,6 +5382,7 @@ window.__EcoCal = {
   giteeBackup, manualGiteeBackup, manualGiteeRestore,
   saveGate, saveGateReal, gateFlush, runBackupOnce, clearBackupTimers,
   catchUpBackup, backupFlagSet, backupFlagClear, backupFlagPending,
+  cloudPayloadFingerprint, lastBackupFpGet, lastBackupFpSet,
   // 备份提醒（供测试/调试）
   initBackupReminders, needsBackupReminder, lastBackupTime, anyAutoBackupEnabled,
   // PIN 锁（供测试/调试）
@@ -5092,6 +5401,10 @@ window.__EcoCal = {
   tradeTimelineHTML, assetCardHTML, Calc,
   // 统计页持仓明细（二级菜单 当前持仓/已卖出，供测试/调试）
   detailTableHTML, statsDetailTab, opsOpen,
+  // 统计页板块配置（显隐/排序，供测试/调试）
+  statsLayoutNormalize, applyStatsLayout, setStatsSectionVisible, moveStatsSection,
+  statsLayoutSetOrder, statsLayoutMoveTo, statsLayoutRowsHTML,
+  STATS_SECTION_ORDER, STATS_SECTION_LABELS,
   // 深色模式（供测试/调试）
   applyTheme, bindThemeListener, cycleTheme, updateThemeButton,
 };
