@@ -253,11 +253,41 @@ assert(approx(sum.metrics[0].simpleAnnual, 500 / 10000 * 365 / EcoCal.dayDiff('2
 const fakeOk = async () => ({ ok: true, json: async () => ({ rates: { CNY: 7.2, USD: 1, EUR: 0.92 } }) });
 const fakeFail = async () => { throw new Error('offline'); };
 const res = await EcoCal.fetchLatestRates('USD', fakeOk);
-assert(approx(res.rates.CNY, round2(1 / 7.2)), 'USD 基准下 1 CNY = 1/7.2 USD，换算正确');
+assert(approx(res.rates.CNY, 1 / 7.2), 'USD 基准下 1 CNY = 1/7.2 USD，换算正确（保留 6 位有效数字）');
 assert(res.rates.USD === undefined, '基准币种自身不进入汇率表');
 let rejected = false;
 try { await EcoCal.fetchLatestRates('USD', fakeFail); } catch (e) { rejected = true; }
 assert(rejected, '全部接口失败时抛出异常（调用方可提示用户）');
+
+// 4.6b 汇率换算精度：小值币种不得被舍成 0（1/3400 = 0.000294，若按 2 位小数会归零）
+const fakeSmall = async () => ({ ok: true, json: async () => ({ rates: { VND: 3400, JPY: 20.9, USD: 0.14 } }) });
+const smallRes = await EcoCal.fetchLatestRates('CNY', fakeSmall);
+assert(approx(smallRes.rates.VND, 1 / 3400, 1e-8), 'VND：1 VND ≈ 0.000294 CNY（保留有效数字，不归零）');
+assert(smallRes.rates.VND > 0 && smallRes.rates.JPY < 1 && smallRes.rates.JPY > 0.04, 'JPY/VND 换算值落在合理区间');
+assert(approx(smallRes.rates.USD, 1 / 0.14, 1e-5), 'USD：1 USD ≈ 7.14286 CNY');
+
+// 4.6c 汇率刷新必须合并而非替换：新接口漏掉的币种保留本地汇率
+assert(EcoCal.mergeRates({ USD: 7.2, HKD: 0.93 }, { USD: 7.25, JPY: 0.048 } ).USD === 7.25,
+  '合并汇率：新值覆盖同币种');
+assert(EcoCal.mergeRates({ USD: 7.2, HKD: 0.93 }, { USD: 7.25, JPY: 0.048 }).HKD === 0.93,
+  '合并汇率：新接口缺失的币种保留本地汇率（否则该币种持仓会静默从总市值消失）');
+assert(EcoCal.mergeRates({ USD: 7.2 }, { USD: 0, JPY: -1 }).USD === 7.2,
+  '合并汇率：无效新值（0/负数）不覆盖本地汇率');
+
+// 4.6d 缺汇率的产品必须被标记（不能静默按 0 计入总市值）
+const gapStats = Calc.statistics([
+  { id: 'g1', name: '人民币基金', category: 'fund', subCategory: '混合型', currency: 'CNY', lastPrice: 10 },
+  { id: 'g2', name: '欧元缺汇率', category: 'fund', subCategory: '其他', currency: 'EUR', lastPrice: 11 },
+], [
+  { id: 't1', assetId: 'g1', type: 'buy', date: '2025-01-01', quantity: 100, price: 10, fee: 0 },
+  { id: 't2', assetId: 'g2', type: 'buy', date: '2025-01-01', quantity: 100, price: 10, fee: 0 },
+], { baseCurrency: 'CNY', rates: {} }, { liabilities: 0 });
+assert(gapStats.totalValue === 1000, '缺汇率产品不计入总市值（仅人民币持仓 1000）');
+assert(gapStats.missingRates.includes('EUR'), '统计结果标记缺失汇率币种 EUR');
+const gapNote = EcoCal.statsGapNote(gapStats);
+assert(gapNote.includes('EUR') && gapNote.includes('未计入'), '缺口提示文案点名缺失币种并说明未计入');
+assert(EcoCal.statsGapNote(Calc.statistics([], [], { baseCurrency: 'CNY', rates: {} }, {})) === '',
+  '无缺口时不产生提示文案');
 
 // 4.7 产品表单（v6：单一入口、仅基本信息、大类联动）
 EcoCal.openAssetForm(null);
@@ -764,6 +794,7 @@ const marketsHtml = elements['dist-markets'].innerHTML || '';
 const currenciesHtml = elements['dist-currencies'].innerHTML || '';
 const concHtml = elements['concentration'].innerHTML || '';
 const detailHtml = elements['detail-table'].innerHTML || '';
+const bankGroupsHtml = elements['bank-groups'] ? (elements['bank-groups'].innerHTML || '') : '';
 assert(dashHtml.includes('总市值') && dashHtml.includes('净资产') && dashHtml.includes('总投入本金'), '仪表盘：总市值/净资产/总投入本金');
 assert(dashHtml.includes('总浮动盈亏') && dashHtml.includes('已实现盈亏') && dashHtml.includes('总盈亏') && dashHtml.includes('现金 vs 风险资产'), '仪表盘：浮动/已实现/总盈亏/现金vs风险');
 assert(dashHtml.includes('浮动盈亏率'), '仪表盘标注浮动盈亏率口径');
@@ -774,12 +805,23 @@ assert(concHtml.includes('Top 5 持仓占比') && concHtml.includes('Top 10 持�
 assert(detailHtml.includes('标的名称') && detailHtml.includes('浮动盈亏率') && detailHtml.includes('当日盈亏') && detailHtml.includes('占比'), '明细表：全部所需列');
 assert(!detailHtml.includes('NaN'), '明细表不出现 NaN');
 assert(!concHtml.includes('NaN') && !dashHtml.includes('NaN'), '仪表盘与集中度不出现 NaN');
+// 折算缺口提示：临时去掉 USD 汇率 → 仪表盘与速览条必须点名提示，而不是静默少算总市值
+const savedRates = Object.assign({}, EcoCal.state.settings.rates);
+delete EcoCal.state.settings.rates.USD;
+EcoCal.renderAll();
+const gapDash = elements['dash-cards'].innerHTML || '';
+const gapSummary = elements['asset-summary'].innerHTML || '';
+assert(gapDash.includes('缺 USD') && gapDash.includes('未计入'), '缺汇率时仪表盘显式提示（不再静默少算总市值）');
+assert(gapSummary.includes('缺 USD') && gapSummary.includes('未计入'), '缺汇率时速览条同样提示');
+EcoCal.state.settings.rates = savedRates;
+EcoCal.renderAll();
 // 产品页卡片渲染（v6 口径）
 assert(listHtml.includes('持仓金额') && listHtml.includes('累计投入（成本）'), '非股票卡片侧重金额指标（持仓金额/累计投入）');
 assert(listHtml.includes('USD/CNY') && listHtml.includes('外币余额'), '外币卡片显示币种对与余额');
 assert(listHtml.includes('持仓数量') && listHtml.includes('平均成本') && listHtml.includes('现价'), '股票卡片显示数量/均价/现价');
 assert(listHtml.includes('＋ 买入') && listHtml.includes('− 卖出'), '卡片操作：买入/卖出按钮');
-assert(listHtml.includes('不可卖 · 还需') && listHtml.includes('可卖'), '批次徽章：既有可卖也有不可卖（演示数据）');
+assert(listHtml.includes('天后可卖') && listHtml.includes('可卖'), '批次徽章：既有可卖也有「N 天后可卖」（演示数据）');
+assert(!listHtml.includes('不可卖'), '锁定徽章文案已简化为「N 天后可卖」，不再出现「不可卖」');
 assert(EcoCal.renderList() === undefined, 'renderList 可重复调用（展开/刷新无异常）');
 
 // 5.1b 统计聚合正确性（Calc.statistics）
@@ -803,6 +845,17 @@ assert(st.top10 >= st.top5 && st.top5 > 0, 'Top10 ≥ Top5 > 0');
 const sortedOk = st.detail.every((r, i) => i === 0 || (st.detail[i - 1].baseValue || 0) >= (r.baseValue || 0));
 assert(sortedOk, '明细按市值降序');
 assert(st.detail[0].asset.name.includes('大额存单'), '明细第一行为市值最大的大额存单');
+
+// 5.1b-2 银行来源聚合（m00945-1：按产品「银行/渠道」归集，看钱分别在哪家银行买了什么产品）
+// 演示数据：a1 招商银行 / a2 蚂蚁财富 / a3 盈透证券 / a5、a6 建设银行 / a7 中国银行；a4 未标注
+assert(Array.isArray(st.bankGroups) && st.bankGroups.length === 6, '银行来源：演示数据聚合出 6 个分组（' + (st.bankGroups || []).map(b => b.label).join(',') + '）');
+assert(st.bankGroups.some(b => b.label === '建设银行' && b.products.length === 2 && b.products.every(p => p.priced === true)), '银行来源：建设银行含大额存单+国债 2 个产品且均有市值');
+assert(st.bankGroups.some(b => b.label === '未标注银行' && b.products.some(p => p.name.includes('招商银行（A股）'))), '银行来源：未标注银行含 a4 招商银行A股');
+assert(st.bankGroups.every(b => b.value > 0 && b.pct != null && b.pct > 0), '银行来源：每个分组市值 > 0 且占比有值');
+assert(st.bankGroups.every((b, i) => i === 0 || st.bankGroups[i - 1].value >= b.value), '银行来源：分组按市值降序');
+const bankSum = st.bankGroups.reduce((s, b) => s + b.value, 0);
+assert(approx(bankSum, st.totalValue), '银行来源：分组市值合计 = 总市值（演示数据全有市值）');
+assert(bankGroupsHtml.includes('bank-row') && bankGroupsHtml.includes('未标注银行'), '银行来源：DOM 渲染出分组行与「未标注银行」');
 
 // 5.1c 持仓明细二级菜单：当前持仓 / 已卖出
 // hold（当前持仓）视图：默认显示全部 13 列，仅含仍有持仓的产品
@@ -850,11 +903,47 @@ EcoCal.renderList();
 const tableHtml = document.getElementById('asset-list').innerHTML;
 assert(tableHtml.includes('asset-list-head'), '产品列表含表头（表格化布局）');
 assert(tableHtml.includes('>产品<') && tableHtml.includes('>数量<') && tableHtml.includes('>成本价<') && tableHtml.includes('>市值<') && tableHtml.includes('>浮动盈亏<') && tableHtml.includes('>总盈亏<'), '表头含产品/数量/成本价/市值/浮动盈亏/总盈亏列');
-assert((tableHtml.match(/class="asset-row"/g) || []).length >= 7, '每个产品渲染为一行（≥7 行演示数据）');
+assert((tableHtml.match(/class="asset-card[ "]/g) || []).length >= 7, '每个产品渲染为一行（≥7 行演示数据）');
 assert(tableHtml.includes('class="asset-detail"') && !tableHtml.includes('asset-detail open'), '行详情区默认收起');
 const rowHtml = EcoCal.assetCardHTML(EcoCal.state.assets[0]);
 assert(rowHtml.includes('class="asset-row"') && rowHtml.includes('class="asset-cell'), '单行结构 = asset-row + asset-cell');
 assert(rowHtml.includes('class="asset-detail"') && rowHtml.includes('class="asset-figures"'), '详情区保留完整指标');
+// 5.1f 数量类信息（数量/成本价/现价、持有份额）只在「按份数计价」的产品展示：
+//      股票、有「份数×单价」交易的基金、外币展示；存款/债券等以总金额记账的产品不展示
+const cardsById = {};
+EcoCal.state.assets.forEach(a => { cardsById[a.id] = EcoCal.assetCardHTML(a); });
+const depositAssetQty = EcoCal.state.assets.find(a => a.category === 'deposit');
+const fundAssetQty = EcoCal.state.assets.find(a => a.category === 'fund');
+const stockAssetQty = EcoCal.state.assets.find(a => a.category === 'stock');
+assert(depositAssetQty && cardsById[depositAssetQty.id].includes('asset-row no-qty'),
+  '存款（按总金额记账）产品行带 no-qty 类：不展示数量/成本价/现价');
+assert(!cardsById[depositAssetQty.id].includes('asset-cell sub') &&
+  cardsById[depositAssetQty.id].includes('amount-note') &&
+  cardsById[depositAssetQty.id].includes('金额口径'),
+  '存款行不渲染数量/成本价/现价三格，改为合并列「金额口径」标注');
+assert(!cardsById[depositAssetQty.id].includes('持有份额'),
+  '存款详情区不展示「持有份额」（数量对总金额记账的产品无意义）');
+assert(cardsById[fundAssetQty.id].includes('class="asset-row"') &&
+  cardsById[fundAssetQty.id].includes('持有份额'),
+  '基金（份数×单价录入）仍展示数量类信息与持有份额');
+assert(cardsById[stockAssetQty.id].includes('class="asset-row"') &&
+  cardsById[stockAssetQty.id].includes('平均成本'),
+  '股票始终展示数量类信息（持仓数量/平均成本）');
+// 全部按「总金额」录入的基金：份额是系统折算的，同样不展示数量类信息
+const amountOnlyFund = { id: 'amount-only-fund', name: '金额记账基金', category: 'fund',
+  subCategory: '混合型', currency: 'CNY', lastPrice: 2.5, priceSource: 'manual' };
+const tradeCountBeforeAmount = EcoCal.state.trades.length;
+EcoCal.state.trades.push({ id: 'aof1', assetId: 'amount-only-fund', type: 'buy', date: '2025-02-01',
+  price: 2.5, quantity: 400, fee: 0, note: '', mode: 'amount' });
+const amountOnlyCard = EcoCal.assetCardHTML(amountOnlyFund);
+assert(amountOnlyCard.includes('asset-row no-qty') && !amountOnlyCard.includes('持有份额'),
+  '总金额录入的基金不展示数量类信息（份额由系统折算，不是用户口径）');
+EcoCal.state.trades.length = tradeCountBeforeAmount;
+// 行内只在「总盈亏」着色，浮动盈亏用中性色（降低红/绿密度）
+assert(rowHtml.includes('asset-cell pnl-float'), '产品行浮动盈亏为中性色单元格');
+assert(rowHtml.includes('money-red') || rowHtml.includes('money-green'),
+  '产品行总盈亏仍按红涨绿跌着色');
+
 // 已清仓徽章：数量为 0 且有过交易时展示「已清仓」
 const soldOutAsset = { id: 'soldout-test', name: '已清仓测试', category: 'stock', subCategory: 'A股', currency: 'CNY', lastPrice: null };
 const beforeTrades = EcoCal.state.trades.length;
@@ -1538,19 +1627,19 @@ EcoCal.clearBackupTimers();
 
 /* ---- 7.17 统计页板块配置（v6.6.x 新增：显示开关 + 顺序调整，即时生效并持久化） ---- */
 {
-  // 7.17.1 默认配置：5 个板块按默认顺序、全部显示
+  // 7.17.1 默认配置：6 个板块按默认顺序、全部显示
   const cfg = EcoCal.state.settings.statsLayout || {};
-  assert(Array.isArray(cfg.order) && cfg.order.length === 5, '板块配置：默认 order 含 5 个板块');
-  assert(cfg.order.join(',') === 'dash-cards,sec-trend,sec-struct,sec-conc,sec-detail', '板块配置：默认顺序与展示顺序一致（' + cfg.order.join(',') + '）');
+  assert(Array.isArray(cfg.order) && cfg.order.length === 6, '板块配置：默认 order 含 6 个板块');
+  assert(cfg.order.join(',') === 'dash-cards,sec-trend,sec-struct,sec-bank,sec-conc,sec-detail', '板块配置：默认顺序与展示顺序一致（' + cfg.order.join(',') + '）');
   assert(Array.isArray(cfg.hidden) && cfg.hidden.length === 0, '板块配置：默认全部显示');
 
   // 7.17.2 归一化：乱序/缺失/非法 id 都能修复
   const norm = EcoCal.statsLayoutNormalize({ order: ['sec-conc', 'bogus-id', 'sec-detail', 'sec-detail'], hidden: ['nope', 'sec-trend'] });
-  assert(norm.order.length === 5 && norm.order.includes('sec-conc') && !norm.order.includes('bogus-id'), '板块配置：归一化去重非法 id 并补齐缺失板块（' + norm.order.join(',') + '）');
+  assert(norm.order.length === 6 && norm.order.includes('sec-conc') && !norm.order.includes('bogus-id'), '板块配置：归一化去重非法 id 并补齐缺失板块（' + norm.order.join(',') + '）');
   assert(norm.order[0] === 'sec-conc' && norm.order.indexOf('sec-detail') < norm.order.indexOf('sec-trend'), '板块配置：归一化保留用户给定顺序');
   assert(norm.hidden.length === 1 && norm.hidden[0] === 'sec-trend', '板块配置：归一化只保留合法隐藏 id');
   const norm2 = EcoCal.statsLayoutNormalize(null);
-  assert(norm2.order.length === 5 && norm2.hidden.length === 0, '板块配置：空配置归一化为默认全显');
+  assert(norm2.order.length === 6 && norm2.hidden.length === 0, '板块配置：空配置归一化为默认全显');
 
   // 7.17.3 隐藏板块：即时生效 + 持久化到 localStorage
   const savedOrder = (EcoCal.state.settings.statsLayout || {}).order.slice();
@@ -1571,31 +1660,31 @@ EcoCal.clearBackupTimers();
   assert(EcoCal.state.settings.statsLayout.order[EcoCal.state.settings.statsLayout.order.length - 1] === 'sec-conc', '板块配置：上移后末位为 sec-conc');
   // 拖动 API：把 dash-cards（此时在第 2 位）移到第 4 位（下标 3）→ 跨过 2 个板块
   assert(EcoCal.statsLayoutMoveTo('dash-cards', 3) === true, '板块配置：statsLayoutMoveTo 移动成功');
-  assert(EcoCal.state.settings.statsLayout.order.join(',') === 'sec-trend,sec-struct,sec-detail,dash-cards,sec-conc',
+  assert(EcoCal.state.settings.statsLayout.order.join(',') === 'sec-trend,sec-struct,sec-bank,dash-cards,sec-detail,sec-conc',
     '板块配置：拖动后顺序正确（' + EcoCal.state.settings.statsLayout.order.join(',') + '）');
   assert(EcoCal.statsLayoutMoveTo('dash-cards', 3) === false, '板块配置：拖回原位置视为无变化（返回 false，不保存）');
   assert(EcoCal.statsLayoutMoveTo('bogus', 0) === false, '板块配置：非法 id 移动被拒绝');
   assert(EcoCal.statsLayoutMoveTo('dash-cards', 99) === true, '板块配置：越界目标位被钳制到末位');
   assert(EcoCal.state.settings.statsLayout.order[EcoCal.state.settings.statsLayout.order.length - 1] === 'dash-cards', '板块配置：越界钳制后 dash-cards 到末位');
   // statsLayoutSetOrder（拖动松手按 DOM 顺序提交）：顺序未变返回 false；含非法 id 时过滤并补齐
-  assert(EcoCal.statsLayoutSetOrder(['dash-cards', 'sec-trend', 'sec-struct', 'sec-conc', 'sec-detail']) === true, '板块配置：statsLayoutSetOrder 提交新顺序');
-  assert(EcoCal.state.settings.statsLayout.order.join(',') === 'dash-cards,sec-trend,sec-struct,sec-conc,sec-detail', '板块配置：setOrder 后顺序正确');
-  assert(EcoCal.statsLayoutSetOrder(['dash-cards', 'sec-trend', 'sec-struct', 'sec-conc', 'sec-detail']) === false, '板块配置：setOrder 相同顺序返回 false（不保存）');
+  assert(EcoCal.statsLayoutSetOrder(['dash-cards', 'sec-trend', 'sec-struct', 'sec-bank', 'sec-conc', 'sec-detail']) === true, '板块配置：statsLayoutSetOrder 提交新顺序');
+  assert(EcoCal.state.settings.statsLayout.order.join(',') === 'dash-cards,sec-trend,sec-struct,sec-bank,sec-conc,sec-detail', '板块配置：setOrder 后顺序正确');
+  assert(EcoCal.statsLayoutSetOrder(['dash-cards', 'sec-trend', 'sec-struct', 'sec-bank', 'sec-conc', 'sec-detail']) === false, '板块配置：setOrder 相同顺序返回 false（不保存）');
   assert(EcoCal.statsLayoutSetOrder(['sec-trend', 'bogus', 'dash-cards']) === true, '板块配置：setOrder 过滤非法 id 并补齐');
-  assert(EcoCal.state.settings.statsLayout.order.join(',') === 'sec-trend,dash-cards,sec-struct,sec-conc,sec-detail', '板块配置：setOrder 过滤补齐后顺序正确');
+  assert(EcoCal.state.settings.statsLayout.order.join(',') === 'sec-trend,dash-cards,sec-struct,sec-bank,sec-conc,sec-detail', '板块配置：setOrder 过滤补齐后顺序正确');
   // 收尾：还原默认布局并持久化（同时清掉 gateDirty 留下的防抖计时器）
-  EcoCal.state.settings.statsLayout = { order: ['dash-cards', 'sec-trend', 'sec-struct', 'sec-conc', 'sec-detail'], hidden: [] };
+  EcoCal.state.settings.statsLayout = { order: ['dash-cards', 'sec-trend', 'sec-struct', 'sec-bank', 'sec-conc', 'sec-detail'], hidden: [] };
   EcoCal.saveState();
   EcoCal.clearBackupTimers();
 
-  // 7.17.5 设置面板渲染：统计页含板块配置列表（5 行，每行有显示开关 + 拖动手柄，无箭头按钮）
+  // 7.17.5 设置面板渲染：统计页含板块配置列表（6 行，每行有显示开关 + 拖动手柄，无箭头按钮）
   const statsHtml = EcoCal.settingsHTML(EcoCal.state.settings);
   assert(statsHtml.includes('id="stats-layout-list"'), '设置面板：统计页包含板块配置列表');
   const rowCount = (statsHtml.match(/class="stats-layout-row"/g) || []).length;
-  assert(rowCount === 5, '设置面板：板块配置行数 = 5（实际 ' + rowCount + '）');
-  assert((statsHtml.match(/data-stats-vis="/g) || []).length === 5, '设置面板：每行含显示开关（5 个）');
-  assert((statsHtml.match(/data-stats-id="/g) || []).length === 5, '设置面板：每行带板块 id（data-stats-id，5 个）');
-  assert((statsHtml.match(/class="stats-layout-grip"/g) || []).length === 5, '设置面板：每行含拖动手柄（5 个）');
+  assert(rowCount === 6, '设置面板：板块配置行数 = 6（实际 ' + rowCount + '）');
+  assert((statsHtml.match(/data-stats-vis="/g) || []).length === 6, '设置面板：每行含显示开关（6 个）');
+  assert((statsHtml.match(/data-stats-id="/g) || []).length === 6, '设置面板：每行带板块 id（data-stats-id，6 个）');
+  assert((statsHtml.match(/class="stats-layout-grip"/g) || []).length === 6, '设置面板：每行含拖动手柄（6 个）');
   assert((statsHtml.match(/data-stats-move=/g) || []).length === 0, '设置面板：已移除上移/下移箭头按钮');
 }
 

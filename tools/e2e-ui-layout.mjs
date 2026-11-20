@@ -131,14 +131,14 @@ try {
   r = await evaluate(`(() => {
     const nav = document.getElementById('stats-nav');
     const items = Array.from(nav.querySelectorAll('.stats-nav-item'));
-    const order = ['dash-cards','sec-trend','sec-struct','sec-conc','sec-detail']
+    const order = ['dash-cards','sec-trend','sec-struct','sec-bank','sec-conc','sec-detail']
       .map(id => id + ':' + (document.getElementById(id).offsetParent !== null));
     const trendBeforeStruct = document.getElementById('sec-trend').compareDocumentPosition(document.getElementById('sec-struct')) & Node.DOCUMENT_POSITION_FOLLOWING;
     return { navItems: items.length, first: items[0].getAttribute('href'), order, trendBeforeStruct: !!trendBeforeStruct };
   })()`);
-  check('统计页有 5 项章节锚点导航', r.navItems === 5, `navItems=${r.navItems}`);
+  check('统计页有 6 项章节锚点导航', r.navItems === 6, `navItems=${r.navItems}`);
   check('首项锚点为「核心仪表盘」', r.first === '#dash-cards', r.first);
-  check('五个章节元素均可见', r.order.every(x => x.endsWith(':true')), r.order.join(','));
+  check('六个章节元素均可见', r.order.every(x => x.endsWith(':true')), r.order.join(','));
   check('章节顺序：走势在配置结构之前（已上移）', r.trendBeforeStruct, JSON.stringify(r.order));
 
   // scroll-spy：页面顶部 / 章节居中 / 页面底部三处，高亮均与「视口中线所在章节」一致
@@ -293,7 +293,8 @@ try {
   // 数量/成本价/现价收进展开区（.sub 隐藏）→ 每行 2 行高（名称行 + 指标行）
   await sleep(300);
   r = await evaluate(`(() => {
-    const row = document.querySelector('.asset-row');
+    // 取「按份数计价」的行（股票/基金）：非份数计价的行会再隐藏浮动盈亏，另有断言覆盖
+    const row = document.querySelector('#asset-list .asset-row:not(.no-qty)') || document.querySelector('.asset-row');
     if (!row) return { error: 'no asset-row' };
     const cells = Array.from(row.querySelectorAll('.asset-cell'));
     const visible = cells.filter(c => getComputedStyle(c).display !== 'none');
@@ -301,9 +302,23 @@ try {
     const height = row.getBoundingClientRect().height;
     return { total: cells.length, visible: visible.length, hidden: hidden.length, height: Math.round(height) };
   })()`);
-  check('窄屏产品行精简：仅 3 个关键指标可见（市值/浮动盈亏/总盈亏；另 3 个次要指标隐藏）',
-    r.total === 7 && r.visible === 4 && r.hidden === 3, JSON.stringify(r));
+  check('窄屏产品行精简：只保留「市值 + 总盈亏」两个关键指标（数量/成本价/现价/浮动盈亏 4 项隐藏）',
+    r.total === 7 && r.visible === 3 && r.hidden === 4, JSON.stringify(r));
   check('窄屏产品行 2 行高（≤110px，修复前 3 行 ~118px）', r.height > 0 && r.height <= 110, JSON.stringify(r));
+  // 所有产品行统一为 2 列（含非份数计价产品），标签仍在（资产速览/明细表保留完整指标）
+  r = await evaluate(`(() => {
+    const rows = Array.from(document.querySelectorAll('#asset-list .asset-row'));
+    const cols = row => getComputedStyle(row).gridTemplateColumns.split(' ').filter(Boolean).length;
+    return {
+      rows: rows.length,
+      badCols: rows.filter(row => cols(row) !== 2).length,
+      floatShown: rows.filter(row => getComputedStyle(row.querySelector('.asset-cell.pnl-float')).display !== 'none').length,
+      heights: rows.map(row => Math.round(row.getBoundingClientRect().height)),
+    };
+  })()`);
+  check('窄屏所有产品行统一 2 列（市值/总盈亏）、浮动盈亏隐藏、行高 ≤110px',
+    r.rows >= 7 && r.badCols === 0 && r.floatShown === 0 &&
+    r.heights.every(h => h > 0 && h <= 110), JSON.stringify(r));
 
   await send('Emulation.clearDeviceMetricsOverride');
   await sleep(400);
@@ -617,14 +632,20 @@ try {
   r = await evaluate(`(() => {
     const head = document.querySelector('#asset-list .asset-list-head');
     const rows = document.querySelectorAll('#asset-list .asset-card');
-    const cells = rows.length ? rows[0].querySelectorAll('.asset-row > .asset-cell').length : 0;
+    // 份数计价行 = 名称 + 数量/成本价/现价 + 市值/浮动/总盈亏 共 7 格；
+    // 金额记账行把三格数量类信息合并成「金额口径」标注，共 5 格（另有断言覆盖）
+    const qtyRow = document.querySelector('#asset-list .asset-row:not(.no-qty)');
+    const cells = qtyRow ? qtyRow.querySelectorAll('.asset-cell').length : 0;
     const rowH = rows.length ? rows[0].querySelector('.asset-row').offsetHeight : 0;
-    return { hasHead: !!head, headText: head ? head.textContent.trim() : '', rows: rows.length, cells, rowH };
+    const noQtyCells = document.querySelector('#asset-list .asset-row.no-qty') ?
+      document.querySelector('#asset-list .asset-row.no-qty').querySelectorAll('.asset-cell').length : 0;
+    return { hasHead: !!head, headText: head ? head.textContent.trim() : '', rows: rows.length, cells, noQtyCells, rowH };
   })()`);
   check('产品列表：表格化表头存在（产品/数量/成本价/现价/市值/浮动盈亏/总盈亏）',
     r.hasHead === true && r.headText.indexOf('产品') > -1 && r.headText.indexOf('数量') > -1 && r.headText.indexOf('浮动盈亏') > -1 && r.headText.indexOf('总盈亏') > -1,
     JSON.stringify(r));
-  check('产品列表：每个产品一行、每行 7 个单元格（名称 + 6 项指标）', r.rows >= 7 && r.cells === 7, JSON.stringify(r));
+  check('产品列表：每个产品一行；份数计价行 7 格（名称 + 6 项指标）、金额记账行 5 格（三列合并标注）',
+    r.rows >= 7 && r.cells === 7 && r.noQtyCells === 5, JSON.stringify(r));
   check('产品列表：单行高度紧凑（≤72px，远低于旧卡片高度）', r.rowH > 0 && r.rowH <= 72, 'rowH=' + r.rowH);
 
   // 展开某一行：详情区出现完整指标与操作按钮
@@ -656,11 +677,70 @@ try {
   })()`);
   await sleep(200);
 
+  /* ================= 4g-2. 数量类信息按记账口径精简 + 行内红色密度 ================= */
+  // 存款/债券等按总金额记账的产品隐藏「数量/成本价/现价」三列，其余列用显式网格定位
+  // 与表头保持对齐；行内只有总盈亏红绿着色（浮动盈亏中性），避免满屏红字
+  r = await evaluate(`(() => {
+    const head = document.querySelector('#asset-list .asset-list-head');
+    const headSpans = Array.from(head.querySelectorAll('span'));
+    const headLeft = k => Math.round(headSpans[k].getBoundingClientRect().left);
+    const fullRow = document.querySelector('#asset-list .asset-row:not(.no-qty)');
+    const noQtyRow = document.querySelector('#asset-list .asset-row.no-qty');
+    const noteCell = noQtyRow ? noQtyRow.querySelector('.asset-cell.amount-note') : null;
+    const cellLeft = (row, sel) => Math.round(row.querySelector(sel).getBoundingClientRect().left);
+    return {
+      hasNoQty: !!noQtyRow,
+      hasFull: !!fullRow,
+      noteText: noteCell ? noteCell.textContent.trim() : '',
+      noteLeft: noteCell ? Math.round(noteCell.getBoundingClientRect().left) : null,
+      noteRight: noteCell ? Math.round(noteCell.getBoundingClientRect().right) : null,
+      headQty: headLeft(1), headPrice: headLeft(3),
+      fullSubs: fullRow ? fullRow.querySelectorAll('.asset-cell.sub').length : 0,
+      headValue: headLeft(4), headFloat: headLeft(5), headTotal: headLeft(6),
+      noQtyValue: noQtyRow ? cellLeft(noQtyRow, '.asset-cell.value') : null,
+      noQtyFloat: noQtyRow ? cellLeft(noQtyRow, '.asset-cell.pnl-float') : null,
+      noQtyTotal: noQtyRow ? cellLeft(noQtyRow, '.asset-cell.pnl-total') : null,
+      redCells: document.querySelectorAll('#asset-list .asset-row .money-red').length,
+      rows: document.querySelectorAll('#asset-list .asset-row').length,
+    };
+  })()`);
+  check('产品列表：非份数计价产品不渲染数量/成本价/现价，改为合并列「金额口径」标注（份数计价产品仍是三格）',
+    r.hasNoQty === true && r.noteText === '金额口径' && r.fullSubs === 3 &&
+    r.noteLeft <= r.headQty + 2 && r.noteRight <= r.headValue,
+    JSON.stringify(r));
+  check('产品列表：隐藏数量列后市值/浮动盈亏/总盈亏仍与表头列对齐（±2px）',
+    Math.abs(r.noQtyValue - r.headValue) <= 2 && Math.abs(r.noQtyFloat - r.headFloat) <= 2 &&
+    Math.abs(r.noQtyTotal - r.headTotal) <= 2, JSON.stringify(r));
+  check('产品行红色密度：每行最多一个红/绿着色单元格（浮动盈亏为中性色）',
+    r.redCells <= r.rows && r.rows >= 7, JSON.stringify({ redCells: r.redCells, rows: r.rows }));
+
+  // 锁定徽章文案：由「不可卖 · 还需 N 天」改为「N 天后可卖」（内容更短、状态更正向）
+  r = await evaluate(`(() => {
+    const locked = Array.from(document.querySelectorAll('#asset-list .badge-sell.locked'));
+    const listText = document.querySelector('#asset-list').textContent;
+    return {
+      count: locked.length,
+      texts: locked.map(el => el.textContent.trim()),
+      hasOldWording: listText.indexOf('不可卖') > -1,
+    };
+  })()`);
+  check('锁定徽章文案：显示「N 天后可卖」且不再出现「不可卖」',
+    r.count > 0 && r.texts.every(t => /^[0-9]+ 天后可卖$/.test(t)) && r.hasOldWording === false,
+    JSON.stringify(r));
+
+  // 仪表盘折算口径：演示数据汇率齐全时不应出现「未计入」缺口提示
+  r = await evaluate(`(() => {
+    const dash = document.querySelector('#dash-cards');
+    return { text: dash ? dash.textContent : '' };
+  })()`);
+  check('统计页仪表盘：汇率齐全时无「未计入」缺口提示',
+    r.text.indexOf('未计入') === -1, r.text.slice(0, 60));
+
   await evaluate(`window.__EcoCal.switchTab('stats'); true`);
   await sleep(200);
 
   /* ================= 4h. 统计页板块配置（显示开关 + 长按拖动排序，v6.6.x 新增） ================= */
-  // 打开设置 → 统计页签：板块配置列表 5 行，每行含显示开关与拖动手柄，无箭头按钮
+  // 打开设置 → 统计页签：板块配置列表 6 行，每行含显示开关与拖动手柄，无箭头按钮
   await evaluate(`window.__EcoCal.openSettings(); true`);
   await sleep(300);
   r = await evaluate(`(() => {
@@ -676,9 +756,9 @@ try {
       arrows: document.querySelectorAll('#stats-layout-list [data-stats-move]').length,
     };
   })()`);
-  check('统计板块配置：列表 5 行（首行仪表盘、末行明细、5 开关、5 手柄、无箭头）',
-    r.rowCount === 5 && r.firstId === 'dash-cards' && r.lastId === 'sec-detail' &&
-    r.checks === 5 && r.grips === 5 && r.arrows === 0,
+  check('统计板块配置：列表 6 行（首行仪表盘、末行明细、6 开关、6 手柄、无箭头）',
+    r.rowCount === 6 && r.firstId === 'dash-cards' && r.lastId === 'sec-detail' &&
+    r.checks === 6 && r.grips === 6 && r.arrows === 0,
     JSON.stringify(r));
 
   // 开关几何与开/关视觉：这些行嵌在 .field 里，曾因 .field label 的 display:block 盖掉 flex 布局，
@@ -724,7 +804,7 @@ try {
     return { order, persistedOrder: persisted.order || [] };
   })()`);
   check('统计板块配置：长按拖动后列表顺序更新（走势提到最前）',
-    r.order.join(',') === 'sec-trend,dash-cards,sec-struct,sec-conc,sec-detail' && r.persistedOrder.join(',') === r.order.join(','),
+    r.order.join(',') === 'sec-trend,dash-cards,sec-struct,sec-bank,sec-conc,sec-detail' && r.persistedOrder.join(',') === r.order.join(','),
     JSON.stringify(r));
 
   // 快速点击（不足长按阈值）不应触发排序：点第 3 行但立刻松手 → 顺序不变
@@ -743,7 +823,7 @@ try {
   })()`);
   await sleep(150);
   r = await evaluate(`Array.from(document.querySelectorAll('#stats-layout-list .stats-layout-row')).map(el => el.dataset.statsId).join(',')`);
-  check('统计板块配置：快速点击不触发排序', r === 'sec-trend,dash-cards,sec-struct,sec-conc,sec-detail', r);
+  check('统计板块配置：快速点击不触发排序', r === 'sec-trend,dash-cards,sec-struct,sec-bank,sec-conc,sec-detail', r);
 
   // 隐藏「配置与结构」板块
   await evaluate(`(() => {
@@ -757,11 +837,34 @@ try {
     return { order: persisted.order || [], hidden: persisted.hidden || [] };
   })()`);
   check('统计板块配置：隐藏操作已持久化（hidden 含 sec-struct）',
-    r.hidden.indexOf('sec-struct') > -1 && r.order.join(',') === 'sec-trend,dash-cards,sec-struct,sec-conc,sec-detail',
+    r.hidden.indexOf('sec-struct') > -1 && r.order.join(',') === 'sec-trend,dash-cards,sec-struct,sec-bank,sec-conc,sec-detail',
     JSON.stringify(r));
 
   await evaluate(`document.getElementById('modal-close').click(); true`);
   await sleep(250);
+
+  /* ================= 4i. 统计页红绿着色密度（走势指标条只给两个主收益指标着色） ================= */
+  r = await evaluate(`(() => {
+    const chips = Array.from(document.querySelectorAll('#trend-stats .ts'));
+    const colored = chips.filter(c => {
+      const b = c.querySelector('b');
+      return b && (b.classList.contains('money-red') || b.classList.contains('money-green'));
+    });
+    const visible = el => {
+      const b = el.getBoundingClientRect();
+      if (!b.width || !b.height) return false;
+      const cs = getComputedStyle(el);
+      return cs.visibility !== 'hidden' && cs.display !== 'none' && cs.opacity !== '0';
+    };
+    let red = 0;
+    document.querySelectorAll('.money-red').forEach(el => { if (visible(el)) red++; });
+    return { chips: chips.length, colored: colored.length, red };
+  })()`);
+  check('统计页走势指标条：8 个指标中只有「累计收益/总收益率」两处着色（降低红字密度）',
+    r.chips === 8 && r.colored === 2, JSON.stringify(r));
+  check('统计页整体红色密度下降（可见红字 ≤ 15 个，修复前 17）',
+    r.red <= 15, JSON.stringify(r));
+
   // 回到统计页：板块顺序 = 配置顺序；被隐藏板块与其标题隐藏；锚点导航同步隐藏
   r = await evaluate(`(() => {
     const panel = document.getElementById('panel-stats');
@@ -782,12 +885,12 @@ try {
     };
   })()`);
   check('统计页：板块按新顺序重排且 h3 标题成对',
-    r.order.join(',') === 'sec-trend,dash-cards,sec-struct,sec-conc,sec-detail' && r.h3Paired === true,
+    r.order.join(',') === 'sec-trend,dash-cards,sec-struct,sec-bank,sec-conc,sec-detail' && r.h3Paired === true,
     JSON.stringify(r));
   check('统计页：隐藏板块与其标题均不可见',
     r.structHidden === true && r.structH3Hidden === true, JSON.stringify(r));
   check('统计页：锚点导航同步隐藏被隐藏板块项',
-    r.navHidden === true && r.visibleNav.join(',') === 'sec-trend,dash-cards,sec-conc,sec-detail',
+    r.navHidden === true && r.visibleNav.join(',') === 'sec-trend,dash-cards,sec-bank,sec-conc,sec-detail',
     JSON.stringify(r));
 
   // 还原：重新打开设置 → 恢复显示 sec-struct + 把 sec-trend（现首行）长按拖回第 2 位
@@ -830,8 +933,51 @@ try {
     return { order, structVis, navVis };
   })()`);
   check('统计页：还原后顺序与显隐回到默认',
-    r.order.join(',') === 'dash-cards,sec-trend,sec-struct,sec-conc,sec-detail' && r.structVis === true && r.navVis === true,
+    r.order.join(',') === 'dash-cards,sec-trend,sec-struct,sec-bank,sec-conc,sec-detail' && r.structVis === true && r.navVis === true,
     JSON.stringify(r));
+
+  // ============ 4j. 银行来源板块（v6.6.x 新增：按产品「银行/渠道」看钱分别在哪家银行） ============
+  // 回到统计页：银行来源板块存在且按银行渲染（演示数据：建设/招商/蚂蚁/盈透/中国 + 未标注银行；按市值降序）
+  r = await evaluate(`(() => {
+    const box = document.getElementById('bank-groups');
+    const list = box ? box.querySelector('.bank-list') : null;
+    const rows = list ? Array.from(list.querySelectorAll('.bank-row')) : [];
+    const labels = rows.map(row => row.querySelector('.bank-name').textContent);
+    const prods = rows.map(row => row.querySelectorAll('.bank-prod').length);
+    const expectLabels = ['建设银行', '招商银行', '蚂蚁财富', '盈透证券', '中国银行', '未标注银行'];
+    const hasAll = expectLabels.every(l => labels.includes(l));
+    const numOf = v => parseFloat(v.replace(/[^0-9.\-]/g, ''));
+    const sortedDesc = rows.every((row, i) => i === 0 || numOf(rows[i - 1].querySelector('.bank-value').textContent) >= numOf(row.querySelector('.bank-value').textContent));
+    return { exists: !!box, rows: rows.length, labels, prods, hasAll, sortedDesc };
+  })()`);
+  check('银行来源板块：渲染 6 家银行/渠道（建设/招商/蚂蚁/盈透/中国 + 未标注银行）、每家含产品胶囊、按市值降序',
+    r.exists && r.rows === 6 && r.hasAll === true && r.sortedDesc === true && r.prods.every(n => n > 0),
+    JSON.stringify(r));
+
+  // 校验「未标注银行」分组存在、每行有市值与占比
+  r = await evaluate(`(() => {
+    const rows = Array.from(document.querySelectorAll('#bank-groups .bank-row'));
+    const labels = rows.map(row => row.querySelector('.bank-name').textContent);
+    const vals = rows.map(row => row.querySelector('.bank-value').textContent);
+    const hasPct = vals.every(v => v.indexOf('%') > -1);
+    return { labels, hasPct };
+  })()`);
+  check('银行来源板块：含「未标注银行」分组、每行均显示折算市值与占比',
+    r.labels.includes('未标注银行') && r.hasPct === true, JSON.stringify(r));
+
+  // ============ 4k. 帮助页顶部版本 + 提交日期小 tag（v6.6.x 新增） ============
+  await evaluate(`window.__EcoCal.openHelp(); true`);
+  await sleep(250);
+  r = await evaluate(`(() => {
+    const tags = Array.from(document.querySelectorAll('.modal .help-meta .help-tag')).map(t => t.textContent.trim());
+    const vOk = tags[0] != null && /^v\\d+\\.\\d+\\.\\d+$/.test(tags[0]);
+    const dateOk = tags[1] != null && /^\\d{2}\\.\\d{2}\\.\\d{2}$/.test(tags[1]);
+    return { tags, dateOk, tagCount: tags.length, vOk };
+  })()`);
+  check('帮助页顶部：v 版本 tag + 提交日期 tag（格式 26.11.20）',
+    r.tagCount === 2 && r.vOk === true && r.dateOk === true, JSON.stringify(r));
+  await evaluate(`document.getElementById('modal-close').click(); true`);
+  await sleep(150);
 
   /* ================= 5. 无 JS 异常 ================= */
   check('运行期间无未捕获 JS 异常', jsErrors === 0, 'errors=' + jsErrors);

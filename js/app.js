@@ -19,6 +19,11 @@ const STORAGE_KEY = 'ecocal.data.v1';
  * - 补丁：缺陷修复 */
 const APP_VERSION = '6.6.4';
 
+/* 最近一次代码提交日期（写死，格式 YY.MM.DD）
+ * 用途：帮助页顶部的小标签，让人一眼看出当前跑的是哪个日期的版本。
+ * 维护方式：每次提交前把这里改成当天日期（例如 2026 年 11 月 20 日 → '26.11.20'）。 */
+const RELEASE_DATE = '26.11.20';
+
 const CURRENCIES = {
   CNY: { symbol: '¥',  name: '人民币' },
   USD: { symbol: '$',  name: '美元' },
@@ -45,6 +50,15 @@ const CATEGORIES = {
   crypto:    { label: '数字货币',  sub: ['比特币', '以太坊', '其他'] },
   other:     { label: '其他',      sub: ['其他'] },
 };
+
+/* 银行 / 渠道常见选项（用于产品表单「银行 / 渠道」输入框的自动补全，可自由手填其它值） */
+const BANK_PRESETS = [
+  '招商银行', '工商银行', '建设银行', '农业银行', '中国银行', '交通银行',
+  '邮储银行', '兴业银行', '浦发银行', '中信银行', '平安银行', '光大银行',
+  '民生银行', '广发银行', '华夏银行', '宁波银行', '北京银行', '上海银行',
+  '蚂蚁财富', '天天基金', '微信理财通', '京东金融', '盈透证券', '富途证券',
+  '雪盈证券', '老虎证券', '东方财富', '券商账户',
+];
 
 /* 外币大类可选的币种（买卖时填「汇率」= 1 外币兑多少人民币，金额按人民币计） */
 const FX_CURRENCIES = ['USD', 'HKD', 'EUR', 'GBP', 'JPY', 'SGD', 'AUD', 'CAD', 'CHF'];
@@ -133,6 +147,18 @@ function dayDiff(a, b) {
   return Math.round((db.getTime() - da.getTime()) / 86400000);
 }
 function round2(n) { return Math.round((Number(n) + Number.EPSILON) * 100) / 100; }
+/**
+ * 汇率保留 6 位有效数字（不用 round2）。
+ * 联网接口给出的是「1 基准币种 = X 外币」，需要取倒数；若倒数按 2 位小数舍入，
+ * JPY / KRW / VND 等「1 基准币种能换很多」的币种会严重失真（1/3400 = 0.000294 → 0.00），
+ * 汇率变成 0 后该产品会被排除在总市值之外，造成「同一份数据总市值差几万」。
+ * 保留有效数字而非固定小数位，可同时覆盖 USD（7.1）与 VND（0.00029）两个数量级。
+ */
+function roundRate(n) {
+  const v = Number(n);
+  if (!isFinite(v) || v <= 0) return 0;
+  return Number(v.toPrecision(6));
+}
 /* 数量/单价保留 4 位小数（股票价格、基金份额等），避免浮点误差累积 */
 function roundQty(n) { return Math.round((Number(n) + Number.EPSILON) * 10000) / 10000; }
 function roundPrice(n) { return Math.round((Number(n) + Number.EPSILON) * 10000) / 10000; }
@@ -210,11 +236,12 @@ function storageRemove() {
 }
 
 /* 统计页板块：固定 id 与中文名称（数组顺序即默认展示顺序，自上而下） */
-const STATS_SECTION_ORDER = ['dash-cards', 'sec-trend', 'sec-struct', 'sec-conc', 'sec-detail'];
+const STATS_SECTION_ORDER = ['dash-cards', 'sec-trend', 'sec-struct', 'sec-bank', 'sec-conc', 'sec-detail'];
 const STATS_SECTION_LABELS = {
   'dash-cards': '核心仪表盘（总市值 / 净资产 / 盈亏速览）',
   'sec-trend': '走势与构成（组合走势 + 盈亏构成）',
   'sec-struct': '配置与结构（类别 / 市场 / 币种分布）',
+  'sec-bank': '银行来源（各银行的持仓与产品）',
   'sec-conc': '集中度（单一标的上限提示）',
   'sec-detail': '持仓明细（当前持仓 / 已卖出）',
 };
@@ -687,6 +714,15 @@ const Calc = {
     const totalValue = round2(rows.reduce((s, r) => s + (r.baseValue != null ? r.baseValue : 0), 0));
     rows.forEach(r => { r.sharePct = (r.baseValue != null && totalValue > 0) ? r.baseValue / totalValue : null; });
 
+    // 未折算进总市值的产品（缺汇率）会被上面的求和「静默按 0 计入」，
+    // 不同设备（汇率获取失败、接口覆盖币种不同）会出现「同一份数据总市值相差数万元」却无从察觉
+    // ——只统计「缺汇率」这一种情况并提示；无持仓/无现价属于正常状态，不提示。
+    const missingRateCurrencies = new Set();
+    rows.forEach(r => {
+      if (r.baseValue != null) return;
+      if (r.pos && r.pos.marketValue != null) missingRateCurrencies.add(r.asset.currency);
+    });
+
     const totalCost = round2(rows.reduce((s, r) => s + (r.baseCost != null ? r.baseCost : 0), 0));
     const totalRealized = round2(rows.reduce((s, r) => s + (r.baseRealized != null ? r.baseRealized : 0), 0));
     const totalFloat = round2(rows.reduce((s, r) => s + (r.baseFloat != null ? r.baseFloat : 0), 0));
@@ -714,6 +750,35 @@ const Calc = {
     const markets = aggregate(r => r.market);
     const currencies = aggregate(r => (r.exposure === 'CNY' || r.exposure === 'USD' || r.exposure === 'HKD') ? r.exposure : '其他');
 
+    // 银行来源聚合：按产品上填写的「银行 / 渠道」归集，用于看清「钱分别在哪家银行买了什么产品」。
+    // 只统计当前仍有持仓的产品（清仓产品不占仓位，出现在银行汇总里会让人误以为还持有）。
+    const bankMap = new Map();
+    rows.forEach(r => {
+      if (!r.pos || !(r.pos.qty > 0)) return;
+      // 未填写银行的产品统一落到「未标注银行」，提示用户去补填，而不是直接丢弃
+      const key = (r.asset.bank && String(r.asset.bank).trim()) || '未标注银行';
+      let bucket = bankMap.get(key);
+      if (!bucket) {
+        bucket = { label: key, value: 0, products: [] };
+        bankMap.set(key, bucket);
+      }
+      const value = r.baseValue != null ? r.baseValue : 0;
+      bucket.value += value;
+      bucket.products.push({
+        name: r.asset.name,
+        category: r.asset.category,
+        value: round2(value),
+        priced: r.baseValue != null,
+      });
+    });
+    const bankGroups = Array.from(bankMap.values()).map(b => {
+      b.products.sort((x, y) => y.value - x.value);
+      b.products.forEach(p => { p.pct = totalValue > 0 ? p.value / totalValue : null; });
+      b.value = round2(b.value);
+      b.pct = totalValue > 0 ? b.value / totalValue : null;
+      return b;
+    }).sort((x, y) => y.value - x.value);
+
     // 集中度
     const valued = rows.filter(r => r.baseValue != null && r.baseValue > 0).sort((x, y) => y.baseValue - x.baseValue);
     const top5 = round2(valued.slice(0, 5).reduce((s, r) => s + r.baseValue, 0));
@@ -729,8 +794,9 @@ const Calc = {
       totalValue, netWorth, liabilities, totalCost,
       totalFloat, floatRate, totalRealized, totalProfit,
       cashValue, riskValue, cashPct, riskPct,
-      groups, markets, currencies,
+      groups, markets, currencies, bankGroups,
       maxAsset, top5, top10, overLimit, singleAssetCap,
+      missingRates: Array.from(missingRateCurrencies),  // 缺汇率未计入总市值的币种
     };
   },
   /**
@@ -1256,7 +1322,64 @@ function detailTableHTML(st, base, tab) {
     '<div class="hint" style="margin-top:10px;font-size:11px;color:var(--ink-3)">' +
     '口径：占比分母 = 总市值（基准 ' + esc(base) + '）；汇率 = 1 币种兑基准币种；浮动盈亏率 = 浮动盈亏 ÷ 持仓成本；' +
     '当日盈亏 = 数量 × (现价 − 前一交易日收盘)，仅有行情日K缓存的产品可算，否则显示 --；' +
-    '已实现盈亏为卖出落袋收益（已折算为基准币种）。</div>';
+    '已实现盈亏为卖出落袋收益（已折算为基准币种）。' + ratesStampHTML() + '</div>';
+}
+
+/**
+ * 汇率来源时间戳说明：用于解释「同一份数据在不同设备上总市值不同」——
+ * 汇率不随云备份同步，各设备各自联网获取，取到的时间/来源不同，折合金额就会不同。
+ */
+function ratesStampHTML() {
+  const s = state.settings || {};
+  if (!s.ratesUpdatedAt) return '（汇率尚未联网更新，当前使用手动填写的汇率）';
+  let text = '汇率更新于 ' + new Date(s.ratesUpdatedAt).toLocaleString('zh-CN');
+  if (s.ratesSource) text += '（' + esc(s.ratesSource) + '）';
+  return '本机换算所用' + text + '，汇率不随备份同步，不同设备可能取到不同时点的汇率。';
+}
+
+/**
+ * 折算缺口提示：缺汇率的持仓会被排除在总市值之外。
+ * 只有「缺汇率」时才提示——无持仓、无现价属于正常状态（如刚建仓的产品），
+ * 常驻标注只是噪音，不再提示。
+ */
+function statsGapNote(st) {
+  if (st.missingRates && st.missingRates.length) {
+    return '缺 ' + st.missingRates.join(' / ') + ' 汇率的持仓未计入（请在「设置 → 汇率」填写或联网获取）';
+  }
+  return '';
+}
+
+/**
+ * 银行来源：按银行 / 渠道汇总持仓市值，并列出该银行下买过哪些产品。
+ * 与「资产类别 / 市场 / 币种」的纯数值分布不同，这里要回答「钱在哪家银行、买了什么」，
+ * 所以每个银行下面挂产品标签（类别标签 + 名称 + 折算市值）。
+ */
+function bankGroupsHTML(items, base) {
+  if (!items || !items.length) {
+    return '<div class="chart-empty">暂无持仓数据。在产品编辑里填写「银行 / 渠道」（如 招商银行、支付宝），即可按银行汇总持仓。</div>';
+  }
+  const maxValue = Math.max.apply(null, items.map(i => i.value)) || 1;
+  const rows = items.map(bank => {
+    const width = Math.max(2, Math.round(Math.abs(bank.value) / maxValue * 100));
+    const pct = bank.pct != null ? Math.round(bank.pct * 1000) / 10 : null;
+    const products = bank.products.map(p => '<span class="bank-prod">' +
+      '<span class="tag tag-' + esc(p.category || 'other') + '">' +
+        esc(CATEGORIES[p.category] ? CATEGORIES[p.category].label : '其他') + '</span>' +
+      '<span class="bank-prod-name">' + esc(p.name) + '</span>' +
+      '<em>' + (p.priced ? fmtMoney(p.value, base) : '--') + '</em>' +
+      '</span>').join('');
+    return '<div class="bank-row">' +
+      '<div class="bank-head">' +
+        '<div class="bank-name">' + esc(bank.label) + '</div>' +
+        '<div class="bank-track"><div style="width:' + width + '%"></div></div>' +
+        '<div class="bank-value">' + fmtMoney(bank.value, base) +
+          (pct != null ? '<em>' + pct + '%</em>' : '') + '</div>' +
+      '</div>' +
+      '<div class="bank-prods">' + products + '</div>' +
+    '</div>';
+  }).join('');
+  return '<div class="bank-list">' + rows + '</div>' +
+    '<div class="hint" style="margin-top:8px;font-size:11px;color:var(--ink-3)">口径：按产品上填写的「银行 / 渠道」归集当前持仓（已清仓的产品不计入）；占比分母 = 总市值；未填写银行的产品归入「未标注银行」。</div>';
 }
 
 /** 统计页总渲染（v6.3：仪表盘 + 配置结构 + 集中度 + 明细 + 走势/构成） */
@@ -1269,8 +1392,11 @@ function renderStats() {
   const cls = v => (v > 0.004 ? 'money-red' : v < -0.004 ? 'money-green' : '');
 
   // 第一层：核心仪表盘（卡片，含金额与比率）
+  // 折算缺口提示：缺汇率 / 无现价的产品不会进入总市值，必须在卡片上说明，避免「总市值莫名少几万」。
+  const gapNote = statsGapNote(st);
   const dash = [
-    { l: '总市值（' + base + '）', v: fmtMoney(st.totalValue, base), sub: '全部持仓折合 ' + base, big: true },
+    { l: '总市值（' + base + '）', v: fmtMoney(st.totalValue, base),
+      sub: '全部持仓折合 ' + base + (gapNote ? '<br><span style="color:var(--orange)">' + gapNote + '</span>' : ''), big: true },
     { l: '净资产（' + base + '）', v: fmtMoney(st.netWorth, base), sub: '总市值 − 负债 ' + fmtMoney(st.liabilities, base), big: true },
     { l: '总投入本金', v: fmtMoney(st.totalCost, base), sub: '当前持仓成本合计', c: '' },
     { l: '总浮动盈亏', v: fmtSignedMoney(st.totalFloat, base), sub: '浮动盈亏率 ' + (st.floatRate == null ? '--' : fmtPct(st.floatRate * 100)) + ' = 浮动 ÷ 投入本金', c: cls(st.totalFloat) },
@@ -1300,6 +1426,10 @@ function renderStats() {
     '市场按标的代码与股票小类判断：A股（沪/深/北）/ 港股 / 美股；其余（如无行情代码的基金等）归入「其他」。占比分母 = 总市值。');
   $id('dist-currencies').innerHTML = distributionHTML(st.currencies, base,
     '币种敞口按资产计价币种（外币产品按其外币币种）归集为 CNY / USD / HKD / 其他；此处仅展示未对冲敞口占比，不做对冲测算。占比分母 = 总市值。');
+
+  // 第三层（新增）：银行来源——钱分别在哪家银行买了什么产品
+  const bankBox = $id('bank-groups');
+  if (bankBox) bankBox.innerHTML = bankGroupsHTML(st.bankGroups, base);
 
   // 集中度
   $id('concentration').innerHTML = concentrationHTML(st, base);
@@ -1677,18 +1807,20 @@ function renderTrendChart() {
   }
 
   // 指标条：收益/年化/回撤/波动/夏普（一般投资产品常见统计）
+  // 配色口径：只给最主要的两个收益指标（累计收益、总收益率）红绿着色，
+  // 其余派生指标（年化/回撤/波动/夏普）用中性色，避免一屏 7 个红字造成视觉疲劳
   const pm = Calc.portfolioMetrics(pts, state.settings);
   const xirrValue = Calc.xirr(state.assets, state.trades, state.settings);
   const rfPct = Number(state.settings.riskFreeRate) != null ? Number(state.settings.riskFreeRate) : 2;
   const chips = [
     { l: '累计收益', v: fmtSignedMoney(s.totalProfit, base), cls: s.totalProfit >= 0 ? 'money-red' : 'money-green' },
     { l: '总收益率', v: s.totalRate == null ? '--' : fmtPct(s.totalRate * 100), cls: (s.totalRate || 0) >= 0 ? 'money-red' : 'money-green' },
-    { l: '年化 · 资金加权（XIRR）', v: xirrValue == null ? '--' : fmtPct(xirrValue * 100), cls: (xirrValue || 0) >= 0 ? 'money-red' : 'money-green' },
-    { l: '年化 · 简单（CAGR）', v: pm.cagr == null ? '--' : fmtPct(pm.cagr * 100), cls: (pm.cagr || 0) >= 0 ? 'money-red' : 'money-green' },
-    { l: '最大回撤', v: pm.maxDD == null ? '--' : fmtPct(pm.maxDD * 100), cls: 'money-green' },
-    { l: '当前回撤', v: pm.currentDD == null ? '--' : fmtPct(pm.currentDD * 100), cls: 'money-green' },
+    { l: '年化 · 资金加权（XIRR）', v: xirrValue == null ? '--' : fmtPct(xirrValue * 100), cls: '' },
+    { l: '年化 · 简单（CAGR）', v: pm.cagr == null ? '--' : fmtPct(pm.cagr * 100), cls: '' },
+    { l: '最大回撤', v: pm.maxDD == null ? '--' : fmtPct(pm.maxDD * 100), cls: '' },
+    { l: '当前回撤', v: pm.currentDD == null ? '--' : fmtPct(pm.currentDD * 100), cls: '' },
     { l: '年化波动率', v: pm.vol == null ? '--' : fmtPct(pm.vol * 100), cls: '' },
-    { l: '夏普（无风险 ' + rfPct + '%）', v: pm.sharpe == null ? '--' : pm.sharpe.toFixed(2), cls: (pm.sharpe || 0) >= 0 ? 'money-red' : 'money-green' },
+    { l: '夏普（无风险 ' + rfPct + '%）', v: pm.sharpe == null ? '--' : pm.sharpe.toFixed(2), cls: '' },
   ];
   $id('trend-stats').innerHTML = chips.map(c =>
     '<div class="ts"><span>' + c.l + '</span><b class="' + c.cls + '">' + c.v + '</b></div>').join('');
@@ -1798,11 +1930,21 @@ function assetListHeadHTML() {
 function assetCardHTML(asset) {
   const isStock = asset.category === 'stock';
   const isFx = asset.category === 'fx';
+  const isFund = asset.category === 'fund';
   const cat = CATEGORIES[asset.category] || { label: asset.category || '其他' };
   const isExpanded = expanded.has(asset.id);
   const isOpsOpen = opsOpen.has(asset.id);
   const subTag = asset.subCategory && asset.subCategory !== '其他' ? asset.subCategory : '';
   const m = Calc.tradePosition(asset, state.trades, asset.lastPrice != null ? Number(asset.lastPrice) : null);
+
+  // 数量类信息（数量 / 成本价 / 现价）的展示口径：
+  // 只有「按份数计价」的产品才需要，股票、基金、外币之外的产品（存款、债券、理财等）
+  // 通常以「总金额」记账，数量/单价对它们没有意义；
+  // 即使是基金，如果全部按「总金额」录入（份额由系统折算而来），也不展示数量类信息。
+  const unitPricedCategory = isStock || isFund || isFx;
+  const hasUnitTrade = state.trades.some(t =>
+    t.assetId === asset.id && ((t.mode || 'qty') === 'qty' || t.mode === 'exchange'));
+  const showQtyInfo = unitPricedCategory && hasUnitTrade;
 
   const floatCls = m.float == null ? '' : (m.float >= 0 ? 'money-red' : 'money-green');
   const realCls = m.realized >= 0 ? 'money-red' : 'money-green';
@@ -1832,7 +1974,7 @@ function assetCardHTML(asset) {
       ? '<span class="badge-sell sellable">可卖</span>'
       : sell.partial
         ? '<span class="badge-sell partial">部分可卖 · ' + fmtQty(sell.lockedQty) + ' 份锁定</span>'
-        : '<span class="badge-sell locked">不可卖 · 还需 ' + sell.remainingDays + ' 天</span>';
+        : '<span class="badge-sell locked">' + sell.remainingDays + ' 天后可卖</span>';
 
   const base = state.settings.baseCurrency;
   const baseValue = m.marketValue != null ? Calc.toBase(m.marketValue, asset.currency, state.settings) : null;
@@ -1850,7 +1992,7 @@ function assetCardHTML(asset) {
     '<span>持有 ' + m.days + ' 天</span>' +
     '<span>交易 ' + m.events.length + ' 笔</span>' +
     (isStock ? '<span>持仓 ' + fmtQty(m.qty) + ' 股</span>' : '') +
-    (isFx && m.qty > 0 ? '<span>' + esc(asset.foreignCurrency || '外币') + ' 余额 ' + fmtQty(m.qty) + '</span>' : '') +
+    (showQtyInfo && isFx && m.qty > 0 ? '<span>' + esc(asset.foreignCurrency || '外币') + ' 余额 ' + fmtQty(m.qty) + '</span>' : '') +
     (sell.minDays != null && !sell.settled ? '<span>最低持有 ' + sell.minDays + ' 天</span>' : '') +
     (m.received > 0 ? '<span>已回收 ' + fmtMoney(m.received, asset.currency) + '</span>' : '') +
     (m.income > 0 ? '<span style="color:var(--red)">💰 累计分红/利息 ' + fmtMoney(m.income, asset.currency) + '</span>' : '');
@@ -1864,13 +2006,16 @@ function assetCardHTML(asset) {
       '<div class="fig"><div class="k">现价</div><div class="v">' + priceStr(asset) + '</div></div>' +
       '<div class="fig"><div class="k">当前市值</div><div class="v">' + (m.marketValue != null ? fmtMoney(m.marketValue, asset.currency) : '--') + '</div></div>';
   } else {
+    // 非股票：以金额为主指标；数量/单位价值仅在「按份数计价」的产品中展示
     figures =
       '<div class="fig"><div class="k">持仓金额</div><div class="v">' + (m.marketValue != null ? fmtMoney(m.marketValue, asset.currency) : '--') + '</div></div>' +
       '<div class="fig"><div class="k">累计投入（成本）</div><div class="v">' + fmtMoney(m.cost, asset.currency) + '</div></div>' +
-      (m.qty > 0
+      (showQtyInfo && m.qty > 0
         ? '<div class="fig"><div class="k">当前' + (isFx ? '汇率' : '单位价值') + '</div><div class="v">' + priceStr(asset) + '</div></div>'
         : '') +
-      '<div class="fig"><div class="k">持有份额' + (isFx ? '（外币余额）' : '') + '</div><div class="v">' + fmtQty(m.qty) + '</div></div>';
+      (showQtyInfo
+        ? '<div class="fig"><div class="k">持有份额' + (isFx ? '（外币余额）' : '') + '</div><div class="v">' + fmtQty(m.qty) + '</div></div>'
+        : '');
   }
   figures +=
     '<div class="fig"><div class="k">浮动盈亏</div><div class="v ' + floatCls + '">' + (m.float != null ? fmtSignedMoney(m.float, asset.currency) : '--') + '</div></div>' +
@@ -1900,9 +2045,10 @@ function assetCardHTML(asset) {
   // 已清仓徽章（数量为 0 且有过交易，与「已卖出」分类口径一致）
   const soldOut = m.qty <= 0 && m.hasTrades;
 
-  // 紧凑表格行：名称 + 数量/成本价/现价/市值/浮动盈亏/总盈亏 + 行尾小箭头
+  // 紧凑表格行：名称 + 数量/成本价/现价（仅按份数计价的产品）+ 市值/浮动盈亏/总盈亏 + 行尾小箭头
+  // 说明：数量/成本价/现价三格始终渲染（保持表格列对齐），非份数计价的产品用 no-qty 类隐藏
   return '<div class="asset-card' + (isExpanded ? ' expanded' : '') + '" data-asset-id="' + asset.id + '">' +
-    '<div class="asset-row">' +
+    '<div class="asset-row' + (showQtyInfo ? '' : ' no-qty') + '">' +
       '<div class="asset-cell asset-cell-name">' +
         '<div class="asset-head">' +
           '<span class="asset-name">' + esc(asset.name) + '</span>' +
@@ -1910,12 +2056,17 @@ function assetCardHTML(asset) {
           '<span class="tag tag-' + asset.category + '">' + esc(cat.label) + '</span>' +
         '</div>' +
       '</div>' +
-      '<div class="asset-cell sub"><span class="asset-k">数量</span>' + fmtQty(m.qty) + '</div>' +
-      '<div class="asset-cell sub"><span class="asset-k">成本价</span>' + (m.qty > 0 ? fmtQty(m.avgCost) : '--') + '</div>' +
-      '<div class="asset-cell sub"><span class="asset-k">现价</span>' + priceStr(asset) + '</div>' +
-      '<div class="asset-cell"><span class="asset-k">市值</span>' + (m.marketValue != null ? fmtMoney(m.marketValue, asset.currency) : '--') + '</div>' +
-      '<div class="asset-cell ' + floatCls + '"><span class="asset-k">浮动盈亏</span>' + (m.float != null ? fmtSignedMoney(m.float, asset.currency) : '--') + '</div>' +
-      '<div class="asset-cell ' + totalCls + '"><span class="asset-k">总盈亏</span>' + fmtSignedMoney(m.totalProfit, asset.currency) + '</div>' +
+      // 数量类信息（数量 / 成本价 / 现价）只对「按份数计价」的产品渲染；
+      // 按金额记账的产品在这三列合并显示一个灰色口径标注，避免大片空白被误读为渲染缺失
+      (showQtyInfo
+        ? '<div class="asset-cell sub qty"><span class="asset-k">数量</span>' + fmtQty(m.qty) + '</div>' +
+          '<div class="asset-cell sub cost"><span class="asset-k">成本价</span>' + (m.qty > 0 ? fmtQty(m.avgCost) : '--') + '</div>' +
+          '<div class="asset-cell sub price"><span class="asset-k">现价</span>' + priceStr(asset) + '</div>'
+        : '<div class="asset-cell amount-note">金额口径</div>') +
+      '<div class="asset-cell value"><span class="asset-k">市值</span>' + (m.marketValue != null ? fmtMoney(m.marketValue, asset.currency) : '--') + '</div>' +
+      // 浮动盈亏用中性色：行内只让「总盈亏」带红/绿，避免满屏红字（详情区仍保留完整配色）
+      '<div class="asset-cell pnl-float"><span class="asset-k">浮动盈亏</span>' + (m.float != null ? fmtSignedMoney(m.float, asset.currency) : '--') + '</div>' +
+      '<div class="asset-cell pnl-total ' + totalCls + '"><span class="asset-k">总盈亏</span>' + fmtSignedMoney(m.totalProfit, asset.currency) + '</div>' +
       '<button class="asset-ops-toggle" data-action="toggleOps" title="操作" aria-label="操作" aria-expanded="' + (isOpsOpen ? 'true' : 'false') + '">' +
         (isOpsOpen ? '✕' : '⋯') +
       '</button>' +
@@ -1973,9 +2124,14 @@ function renderAssetSummary() {
   const filterActive = filters.category !== 'all' || filters.currency !== 'all' ||
     ((filters.query || '').trim() !== '') || !!filters.assetId || !!filters.risk || !!filters.fxFlag;
   const totalRate = st.totalCost > 0 ? st.totalProfit / st.totalCost : null;
+  const gapNote = statsGapNote(st);
+  // 有筛选时把标题也改成「筛选后总市值」：此前标题始终是「总市值」，容易与统计页的
+  // 全量总市值被当成同一个数字比对（同一份数据也会「差几万」）。
   const cells = [
-    { l: '总市值（' + base + '）', v: fmtMoney(st.totalValue, base), c: '',
-      sub: filterActive ? '筛选后 ' + list.length + ' 项' : '全部持仓折合 ' + base },
+    { l: (filterActive ? '筛选后总市值（' + base + '）' : '总市值（' + base + '）'),
+      v: fmtMoney(st.totalValue, base), c: '',
+      sub: (filterActive ? '筛选后 ' + list.length + ' 项 · 全量 ' + state.assets.length + ' 项' : '全部持仓折合 ' + base) +
+        (gapNote ? '<br><span style="color:var(--orange)">' + gapNote + '</span>' : '') },
     { l: '累计投入', v: fmtMoney(st.totalCost, base), c: '', sub: '当前持仓成本合计' },
     { l: '总盈亏（浮+实）', v: fmtSignedMoney(st.totalProfit, base), c: cls(st.totalProfit),
       sub: '浮动 ' + fmtSignedMoney(st.totalFloat, base) + ' · 已实现 ' + fmtSignedMoney(st.totalRealized, base) },
@@ -2160,6 +2316,11 @@ function assetFormHTML(asset, preset) {
     '</select></div>' +
     '<div class="field"><label>T+n 到账（可选）</label><input id="f-tplusn" type="number" min="0" step="1" placeholder="如 1（T+1）" value="' + esc(a.tPlusN) + '">' +
       '<div class="hint">赎回/卖出后多少个交易日到账</div></div>' +
+    '<div class="field"><label>银行 / 渠道（可选）</label><input id="f-bank" type="text" list="bank-presets" placeholder="如：招商银行 / 支付宝 / 券商账户" value="' + esc(a.bank || '') + '">' +
+      '<datalist id="bank-presets">' +
+        BANK_PRESETS.map(b => '<option value="' + esc(b) + '">').join('') +
+      '</datalist>' +
+      '<div class="hint">用于统计页「银行来源」按银行汇总持仓；留空归入「未标注银行」</div></div>' +
     '<div class="field full"><label>备注（可选）</label><input id="f-note" type="text" placeholder="如：定投账户 / 美元现金池" value="' + esc(a.note) + '"></div>' +
     hint +
   '</div>';
@@ -2220,6 +2381,7 @@ function submitAsset(assetId) {
   const riskLevel = $id('f-risk').value || null;
   const tPlusNRaw = $id('f-tplusn').value.trim();
   const tPlusN = tPlusNRaw === '' ? null : Math.floor(parseFloat(tPlusNRaw));
+  const bank = $id('f-bank') ? $id('f-bank').value.trim() : (asset ? (asset.bank || '') : '');
   const note = $id('f-note').value.trim();
   if (tPlusN != null && (!isFinite(tPlusN) || tPlusN < 0)) {
     alert('T+n 必须是非负整数。'); return;
@@ -2234,12 +2396,14 @@ function submitAsset(assetId) {
     asset.name = name; asset.category = category; asset.subCategory = subCategory;
     asset.currency = currency; asset.foreignCurrency = foreignCurrency;
     asset.note = note; asset.riskLevel = riskLevel; asset.tPlusN = tPlusN;
+    asset.bank = bank || null;
     asset.symbol = symbol;
     asset.updatedAt = Date.now();
   } else {
     state.assets.push({
       id: uid('asset_'), name, category, subCategory, currency, foreignCurrency,
       note, riskLevel, tPlusN, symbol,
+      bank: bank || null,
       startDate: null, principal: 0, quantity: null, minHoldDays: null,
       createdAt: Date.now(), updatedAt: Date.now(),
     });
@@ -2270,10 +2434,14 @@ async function fetchLatestRates(baseCurrency, fetcher) {
       const rates = data && data.rates;
       if (!rates || typeof rates !== 'object') throw new Error('响应格式异常');
       // 公开接口给出的是「1 基准币种 = X 币种」，换算为「1 币种 = X 基准币种」
+      // 注意：此处不能用 round2（2 位小数），否则小值币种会失真甚至归零，见 roundRate 注释。
       const out = {};
       Object.keys(rates).forEach(c => {
         const r = Number(rates[c]);
-        if (c !== baseCurrency && isFinite(r) && r > 0) out[c] = round2(1 / r);
+        if (c !== baseCurrency && isFinite(r) && r > 0) {
+          const converted = roundRate(1 / r);
+          if (converted > 0) out[c] = converted;
+        }
       });
       if (!Object.keys(out).length) throw new Error('无有效汇率数据');
       return { rates: out, source: src.name, updatedAt: Date.now() };
@@ -2285,14 +2453,30 @@ async function fetchLatestRates(baseCurrency, fetcher) {
 }
 
 /**
+ * 合并汇率：以本地现有汇率为底，用新获取到的有效汇率覆盖同币种，缺失的币种保留。
+ * 单独抽成函数便于单元测试（applyLatestRates 内部使用）。
+ */
+function mergeRates(previous, incoming) {
+  const merged = Object.assign({}, previous || {});
+  Object.keys(incoming || {}).forEach(code => {
+    const value = Number(incoming[code]);
+    if (isFinite(value) && value > 0) merged[code] = value; // 只覆盖有效的新汇率
+  });
+  return merged;
+}
+
+/**
  * 应用最新汇率：写入 settings.rates 并刷新界面。
  * silent = true 时不弹窗（用于启动时静默自动获取）。
+ * 注意：联网结果与本地现有汇率**合并**而不是整体替换——不同接口覆盖的币种不同
+ * （如欧央行接口不含部分小币种），整体替换会让原本可折算的持仓突然失去汇率、
+ * 从总市值里消失（表现为「不同设备总市值差几万」）。本地手动填写的汇率同样保留。
  */
 async function applyLatestRates(opts) {
   const silent = opts && opts.silent;
   try {
     const result = await fetchLatestRates(state.settings.baseCurrency);
-    state.settings.rates = result.rates;
+    state.settings.rates = mergeRates(state.settings.rates, result.rates);
     state.settings.ratesUpdatedAt = result.updatedAt;
     state.settings.ratesSource = result.source;
     saveState(); renderAll();
@@ -5191,6 +5375,9 @@ function seedDemo() {
   const a6 = mk('国债（3年期）', 'bond', '国债', 'CNY', '', { riskLevel: 'R1', tPlusN: 0 });
   // 外币：人民币买入美元（qty = 美元金额，price = 汇率 → 金额即人民币）
   const a7 = mk('美元现汇（USD/CNY）', 'fx', '现汇', 'CNY', '外币演示：用人民币买卖美元', { riskLevel: 'R1', tPlusN: 0, foreignCurrency: 'USD' });
+  // 演示「银行来源」板块：给各产品标注银行（a4 未标注，会落入「未标注银行」分组，用于演示提示）
+  a1.bank = '招商银行'; a2.bank = '蚂蚁财富'; a3.bank = '盈透证券';
+  a5.bank = '建设银行'; a6.bank = '建设银行'; a7.bank = '中国银行';
 
   // 当前市值/汇率（均可联网或手动更新）
   a1.lastPrice = 10.8;   a1.priceSource = 'manual';
@@ -5234,6 +5421,7 @@ function seedDemo() {
 /* ---------------- 帮助（使用指南 + 概念说明 + 演示数据） ---------------- */
 const HELP_HTML = ''
   + '<div class="help-content">'
+  + '<div class="help-meta"><span class="tag help-tag">v' + APP_VERSION + '</span><span class="tag help-tag help-tag-date">' + RELEASE_DATE + '</span></div>'
   + '<section class="help-section"><h4>如何使用（v6）</h4><ol>'
   + '<li><b>添加产品</b>：点右上角「＋ 添加产品」，只需填写<b>基本信息</b>（名称、大类小类、币种等）。选「股票」时多一步：填写股票代码（自动识别市场/币种/名称，直接进监察表）；选「外币」时选择外币币种（以人民币买卖，按汇率计算收益）。无需填写本金——所有资金进出都通过买卖记录。</li>'
   + '<li><b>记录买卖</b>：卡片上点「＋ 买入 / − 卖出」逐笔记账。每笔支持两种录入方式：<b>份数×单价</b>（金额自动算，股票默认）或<b>总金额</b>（份额自动折算，基金等默认）。<b>外币</b>另有<b>兑换</b>方式：买入填「花费人民币 + 买入外币」、卖出填「收回人民币 + 卖出外币」，汇率自动反推。卖出时系统自动校验不超持仓。</li>'
@@ -5271,7 +5459,7 @@ const HELP_HTML = ''
   + '<li>沪深300指数基金：两笔买入（5,000 份 @10.00 + 2,000 份 @10.60），两批分别锁定 30 天 / 7 天，当前净值 10.80</li>'
   + '<li>苹果（AAPL）：分批买入 10 股、部分卖出 3 股 @210，当前股价 206</li>'
   + '<li>招商银行（A股，代码 sh600036）：800 股建仓、卖 200、补 100，现价 38.52，演示加权平均与已实现盈亏</li>'
-  + '<li>3 年期大额存单 / 国债：单笔大额买入，锁 1095 天 → 显示「不可卖」徽章</li>'
+  + '<li>3 年期大额存单 / 国债：单笔大额买入，锁 1095 天 → 显示「N 天后可卖」徽章</li>'
   + '<li>美元现汇（USD/CNY）：买入 2,000 USD @7.15，卖出 500 USD @7.30，现汇率 7.22，演示外币按人民币买卖</li>'
   + '</ul>'
   + '<p style="margin-top:6px">想实际体验操作？<b>只有在当前没有任何数据时</b>才能载入：</p>'
@@ -5366,7 +5554,8 @@ if (document.readyState === 'loading') {
 /* 暴露给测试/调试使用 */
 window.__EcoCal = {
   APP_VERSION, Calc, state, uid, round2, roundQty, roundPrice, dayDiff, todayStr, seedDemo, loadState, saveState,
-  fetchLatestRates, applyLatestRates, RISK_LEVELS, SORT_OPTIONS, CATEGORIES, FX_CURRENCIES,
+  fetchLatestRates, applyLatestRates, mergeRates, statsGapNote, ratesStampHTML,
+  RISK_LEVELS, SORT_OPTIONS, CATEGORIES, FX_CURRENCIES,
   openSettings, openAssetForm, openTradeForm, openHelp, settingsHTML,
   submitTrade, submitAsset,
   renderAll, renderList,

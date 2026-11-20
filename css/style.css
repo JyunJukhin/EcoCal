@@ -76,6 +76,8 @@ html[data-theme="dark"] .detail-table tbody tr:hover{background:rgba(10,132,255,
 html[data-theme="dark"] .detail-tab{color:var(--ink-2)}
 html[data-theme="dark"] .detail-tab:hover{border-color:var(--accent);color:var(--accent)}
 html[data-theme="dark"] .dist-track{background:rgba(255,255,255,.1)}
+html[data-theme="dark"] .bank-track{background:rgba(255,255,255,.1)}
+html[data-theme="dark"] .bank-prod{background:rgba(255,255,255,.06)}
 html[data-theme="dark"] .trend-stats .ts{background:rgba(255,255,255,.06)}
 html[data-theme="dark"] .settings-select, html[data-theme="dark"] select,
 html[data-theme="dark"] .filter-bar select{background:#2c2c30;color:var(--ink)}
@@ -310,6 +312,26 @@ html[data-theme="dark"] *{scrollbar-color:rgba(255,255,255,.3) transparent}
 .dist-value{text-align:right;font-feature-settings:"tnum";font-size:13px;font-weight:600;white-space:nowrap}
 .dist-value em{display:block;font-style:normal;font-weight:400;font-size:11px;color:var(--ink-3)}
 
+/* 银行来源：每个银行一行（名称 + 占比条 + 金额），下方挂该银行买过的产品标签 */
+.bank-list{display:flex;flex-direction:column;gap:14px}
+.bank-row{display:flex;flex-direction:column;gap:8px}
+.bank-head{display:grid;grid-template-columns:120px 1fr 128px;gap:12px;align-items:center}
+@media (max-width:640px){.bank-head{grid-template-columns:96px 1fr 104px;gap:10px}}
+.bank-name{font-size:13px;font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bank-track{height:18px;border-radius:9px;background:rgba(0,0,0,.05);overflow:hidden}
+.bank-track div{height:100%;border-radius:9px;background:linear-gradient(90deg,var(--macaron-blue),var(--macaron-sage));transition:width .3s}
+.bank-value{text-align:right;font-feature-settings:"tnum";font-size:13px;font-weight:600;white-space:nowrap}
+.bank-value em{display:block;font-style:normal;font-weight:400;font-size:11px;color:var(--ink-3)}
+.bank-prods{display:flex;flex-wrap:wrap;gap:6px}
+.bank-prod{
+  display:inline-flex;align-items:center;gap:6px;max-width:100%;
+  background:#f5f5f7;border:1px solid var(--line);border-radius:980px;
+  padding:3px 10px 3px 4px;font-size:12px;color:var(--ink);
+}
+.bank-prod-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:190px}
+@media (max-width:640px){.bank-prod-name{max-width:130px}}
+.bank-prod em{font-style:normal;color:var(--ink-2);font-feature-settings:"tnum"}
+
 /* 集中度 */
 .conc-cards{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:12px}
 @media (max-width:900px){.conc-cards{grid-template-columns:1fr}}
@@ -471,6 +493,19 @@ html[data-theme="dark"] .filter-bar select{background:#2c2c30;color:var(--ink)}
 .asset-cell{font-size:13px;font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .asset-cell .asset-k{display:none}
 .asset-cell-name{text-align:left;white-space:normal}
+/* 桌面端：单元格用显式网格列定位，这样隐藏「数量/成本价/现价」后其余列仍与表头严格对齐 */
+.asset-row .asset-cell-name{grid-column:1}
+.asset-row .asset-cell.qty{grid-column:2}
+.asset-row .asset-cell.cost{grid-column:3}
+.asset-row .asset-cell.price{grid-column:4}
+.asset-row .asset-cell.value{grid-column:5}
+.asset-row .asset-cell.pnl-float{grid-column:6}
+.asset-row .asset-cell.pnl-total{grid-column:7}
+.asset-row .asset-ops-toggle{grid-column:8}
+/* 按总金额记账的产品（存款/债券/理财等，或全部用「总金额」录入的基金）：
+   数量 / 成本价 / 现价 对它们没有意义，不再渲染这三格，改为在对应列宽里合并显示「金额口径」标注
+   （占第 2~4 列，保持与表头的列对齐） */
+.asset-row .asset-cell.amount-note{grid-column:2/5;display:block;text-align:right;color:var(--ink-3);font-size:12px}
 .asset-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .asset-name{font-size:14px;font-weight:650;letter-spacing:-.01em}
 .badge-sold{
@@ -664,6 +699,14 @@ html[data-theme="dark"] .rate-row .rate-input{background:#1e1e22;color:var(--ink
 
 /* ============ 帮助内容 ============ */
 .help-content{max-height:62vh;overflow-y:auto;padding-right:6px}
+.help-meta{display:flex;gap:8px;align-items:center;margin:2px 0 14px}
+.help-meta .help-tag{
+  display:inline-flex;align-items:center;gap:4px;
+  font-size:12px;font-weight:600;border-radius:980px;padding:4px 12px;
+  background:var(--accent);color:#fff;
+}
+.help-meta .help-tag-date{background:rgba(0,0,0,.05);color:var(--ink-2)}
+html[data-theme="dark"] .help-meta .help-tag-date{background:rgba(255,255,255,.12);color:var(--ink)}
 .help-section{margin-bottom:20px}
 .help-section h4{
   font-size:14px;font-weight:650;color:var(--ink);
@@ -675,15 +718,23 @@ html[data-theme="dark"] .rate-row .rate-input{background:#1e1e22;color:var(--ink
 
 /* 响应式 */
 @media (max-width:640px){
-  /* 表格化列表在窄屏改为 3 列堆叠：首行名称，其余指标带小标签 */
+  /* 表格化列表在窄屏改为 2 列堆叠：首行名称（跨列），第二行只有「市值 + 总盈亏」两个关键指标 */
   .asset-list-head{display:none}
-  .asset-row{position:relative;grid-template-columns:repeat(3,1fr);gap:8px 10px;padding:12px}
-  .asset-cell-name{grid-column:1/-1;padding-right:36px}
+  .asset-row{position:relative;grid-template-columns:repeat(2,1fr);gap:8px 10px;padding:12px}
+  /* 覆盖桌面端的显式列定位，窄屏回到自动流式排布 */
+  .asset-row .asset-cell-name{grid-column:1/-1}
+  .asset-row .asset-cell.value,
+  .asset-row .asset-cell.pnl-float,
+  .asset-row .asset-cell.pnl-total,
+  .asset-row .asset-ops-toggle{grid-column:auto}
+  .asset-cell-name{padding-right:36px}
   .asset-cell{text-align:left;white-space:normal;overflow:visible}
   .asset-cell .asset-k{display:block;font-size:10px;color:var(--ink-3);margin-bottom:1px}
-  /* 精简模式：隐藏次要指标（数量/成本价/现价），只保留市值/浮动盈亏/总盈亏 → 每行 2 行高；
-     次要指标在展开区（持仓数量/平均成本/现价/当前市值）中完整可见 */
+  /* 精简模式：窄屏只保留「市值 + 总盈亏」两个关键指标（两列更宽、一眼可读，每行 2 行高）。
+     数量/成本价/现价/浮动盈亏等次要指标在展开区（持仓数量/平均成本/现价/当前市值/浮动盈亏）完整可见 */
   .asset-row .asset-cell.sub{display:none}
+  .asset-row .asset-cell.pnl-float{display:none}
+  .asset-row .asset-cell.amount-note{display:none}
   .asset-ops-toggle{position:absolute;top:10px;right:10px;justify-self:auto}
   .asset-ops{justify-content:flex-start}
   .summary-card .value{font-size:23px}
@@ -848,7 +899,7 @@ html[data-theme="dark"] .stats-layout-row.dragging{box-shadow:0 8px 24px rgba(0,
 .stats-nav-item:hover{color:var(--ink)}
 .stats-nav-item.on{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
 /* 锚点跳转时让章节标题避开吸顶的顶栏 / Tab 栏 / 锚点导航（8px 余量） */
-#dash-cards,#sec-trend,#sec-struct,#sec-conc,#sec-detail{
+#dash-cards,#sec-trend,#sec-struct,#sec-bank,#sec-conc,#sec-detail{
   scroll-margin-top:calc(var(--topbar-h,58px) + var(--tabs-h,44px) + 56px);
 }
 @media (max-width:640px){
